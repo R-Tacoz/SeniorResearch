@@ -8,7 +8,7 @@ from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.env_checker import check_env
 from pettingzoo.utils import parallel_to_aec
 from pettingzoo.test import parallel_api_test
-from Robot_Env import RobotSearchEnv  # Import your custom environment
+from Robot_Env import RobotSearchEnv
 
 # Testing environment
 parallel_env = RobotSearchEnv(num_robots=3, width=10, height=10, target_location=(8, 8), fov_radius=2, render_mode="human")
@@ -42,7 +42,7 @@ class RewardTrackerCallback(BaseCallback):
             if self.verbose:
                 print(f"Step: {self.num_timesteps}, Avg Reward: {mean_reward:.4f}")
             
-            self.episode_rewards = []  # Reset rewards
+            self.episode_rewards = []
         return True
     
     def _on_rollout_end(self):
@@ -65,14 +65,12 @@ model = PPO(
     n_epochs=10
 )
 
-# Train the model with callback
 reward_tracker = RewardTrackerCallback(check_freq=10000, verbose=1)
 model.learn(total_timesteps=100000, callback=reward_tracker)
 
-# Save the trained model
 model.save("mappo_robot_search")
 
-# Plot training performance
+# Plot performance
 plt.plot(reward_tracker.timesteps, reward_tracker.avg_rewards)
 plt.xlabel("Timesteps")
 plt.ylabel("Average Reward")
@@ -84,7 +82,7 @@ model = PPO.load("mappo_robot_search")
 print(env.reset())
 obs = env.reset()
 
-for _ in range(50):  # Run test for 50 steps
+for _ in range(50):
     actions, _ = model.predict(obs)
     obs, rewards, done, truncs = env.step(actions)
     env.render() 

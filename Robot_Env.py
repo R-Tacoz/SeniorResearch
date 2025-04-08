@@ -255,10 +255,10 @@ if __name__ == "__main__":
     env = RobotSearchEnv(render_mode="human")
     obs, _ = env.reset()
 
-    for _ in range(50):  # Run test for 50 steps
+    for _ in range(50):
         actions = {robot: np.random.uniform(-1, 1, size=(2,)) for robot in env.agents}
         obs, rewards, done, trunc, _ = env.step(actions)
-        env.render()  #
+        env.render()
 
         if done["robot_0"] or done["robot_1"] or done["robot_2"]:
             break
