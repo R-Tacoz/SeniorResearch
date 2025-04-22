@@ -1,9 +1,13 @@
 import cv2
 import torch
 from ultralytics import YOLO
+import logging
+logging.getLogger('cv2').setLevel(logging.ERROR)
+
+ROOT = "D:/Research/SeniorResearch/"
+YOLO_MODEL_WEIGHTS = "yolo/runs/train2/weights/best.pt"
 
 def detect_camera():
-    """Automatically detect an available camera."""
     for i in range(5):  # Check first 5 camera indexes
         cap = cv2.VideoCapture(i)
         if cap.isOpened():
@@ -12,8 +16,8 @@ def detect_camera():
     return None
 
 def main():
-    model_path = "D:/Research/SeniorResearch/runs/detect/train/weights/best.pt"  # Change to your trained model's path
-    model = YOLO(model_path)  # Load YOLO model
+    model_path = ROOT + YOLO_MODEL_WEIGHTS
+    model = YOLO(model_path)
     
     cam_index = detect_camera()
     if cam_index is None:

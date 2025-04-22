@@ -1,54 +1,20 @@
 name: SR_Env
 channels:
   - defaults
-  - https://repo.anaconda.com/pkgs/main
-  - https://repo.anaconda.com/pkgs/r
+  - pytorch
+  - nvidia
+  - conda-forge
+  - nodefaults
 dependencies:
-  - bzip2=1.0.8=h80987f9_6
-  - ca-certificates=2025.2.25=hca03da5_0
-  - expat=2.6.4=h313beb8_0
-  - libcxx=14.0.6=h848a8c0_0
-  - libffi=3.4.4=hca03da5_1
-  - ncurses=6.4=h313beb8_0
-  - openssl=3.0.16=h02f6b3c_0
-  - pip=25.0=py312hca03da5_0
-  - python=3.12.3=h99e199e_1
-  - readline=8.2=h1a28f6b_0
-  - setuptools=75.8.0=py312hca03da5_0
-  - sqlite=3.45.3=h80987f9_0
-  - tk=8.6.14=h6ba3021_0
-  - tzdata=2025a=h04d1e81_0
-  - wheel=0.45.1=py312hca03da5_0
-  - xz=5.6.4=h80987f9_1
-  - zlib=1.2.13=h18a0788_1
+  - pygame=2.5.2
+  - gymnasium=1.0.0
+  - numpy=1.26.4
+  - pettingzoo=1.24.3
+  - pip
+  - python=3.10
+  - pytorch=2.5.1
+  - pytorch-cuda=12.4
+  - scipy=1.15.2
+  - stable-baselines3=2.6.0
   - pip:
-      - cloudpickle==3.1.1
-      - contourpy==1.3.1
-      - cycler==0.12.1
-      - farama-notifications==0.0.4
-      - filelock==3.18.0
-      - fonttools==4.57.0
-      - fsspec==2025.3.2
-      - gym==0.26.2
-      - gym-notices==0.0.8
-      - gymnasium==1.1.1
-      - jinja2==3.1.6
-      - kiwisolver==1.4.8
-      - markupsafe==3.0.2
-      - matplotlib==3.10.1
-      - mpmath==1.3.0
-      - networkx==3.4.2
-      - numpy==2.2.4
-      - packaging==24.2
-      - pettingzoo==1.24.3
-      - pillow==11.2.1
-      - pygame==2.6.1
-      - pyparsing==3.2.3
-      - python-dateutil==2.9.0.post0
-      - scipy==1.15.2
-      - six==1.17.0
       - supersuit==3.9.3
-      - sympy==1.13.1
-      - tinyscaler==1.2.8
-      - torch==2.6.0
-      - typing-extensions==4.13.2

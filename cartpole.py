@@ -22,7 +22,7 @@ epsilon = 1.0         # Exploration rate
 epsilon_decay = 0.995 # Decay rate for exploration
 epsilon_min = 0.01    # Minimum exploration rate
 learning_rate = 0.001
-n_episodes = 1000
+n_episodes = 100
 
 # Define the neural network model
 class DQN(nn.Module):
@@ -111,6 +111,7 @@ plt.show()
 state, _ = env.reset()
 for _ in range(500):
     env.render()
+    print('render')
     action = agent.act(state)
     state, _, done, _, _ = env.step(action)
     if done:
