@@ -190,12 +190,12 @@ class MainEnv(ParallelEnv):
 
     def make_observation(self, position):
         heading = 0
-        n_rays = 180
+        n_rays = 4
         
         rays: list[LineString] = MainEnv.generate_rays(
             np.array(position), heading, n_rays, self.lidar_range)
         
-        scan = np.full(n_rays, self.lidar_range)
+        scan = np.full(n_rays, self.lidar_range, dtype=np.float64)
         
         for i, ray in enumerate(rays):
             for obstacle in self.obstacle_coords:
@@ -269,6 +269,9 @@ class MainEnv(ParallelEnv):
 
         self.screen.fill((255, 255, 255))  # White background
 
+        fps = self.clock.get_fps()
+        pygame.display.set_caption(f"FPS: {fps:.2f}")
+        
         # Draw grid
         for x in range(self.env_width):
             for y in range(self.env_height):
