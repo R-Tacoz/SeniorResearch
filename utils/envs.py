@@ -4,7 +4,8 @@ import functools
 from pettingzoo.utils.env import ParallelEnv
 from gymnasium.spaces import Box, Discrete
 import shapely
-from shapely.geometry import LineString, Point, box
+from shapely.geometry import LineString, Point, box, Polygon
+from shapely import Geometry
 from scipy.spatial import distance
 from scipy.spatial import KDTree
 from utils.agents import RandomAgent, MLPAgent, ConvAgent
@@ -20,7 +21,9 @@ class MultiAgentEnv:
         self.visited_points = []
 
     def mark_visited(self, agent_x, agent_y):
-        self.visited_points.append((agent_x, agent_y))
+        # self.visited_points.append((agent_x, agent_y))
+        # hella memory leak
+        return
 
     def distance_to_nearest_explored(self, x, y):
         if not self.visited_points:
@@ -33,26 +36,35 @@ class MultiAgentEnv:
         return dist * 0.1
 
 class MainEnv(ParallelEnv):
-    metadata = {"render_modes": ["human"], "name": "robot_search_v0"} 
-    
+    metadata = {"render_modes": ["human"], "name": "robot_search_v0"}
+    colors = {
+        'bg': (255,255,255),
+        'grid': (200,200,200),
+        'lidar_range': (120,120,180),
+        'camera_range': (100,100,180),
+        'obstacle': (0,0,0),
+        'target': (255,0,0),
+        'robot': (0,0,255),
+    }
+    resets_i = 0
 
     def __init__(
         self, 
-        num_robots=3, 
-        width=20, 
-        height=20, 
-        target_location=(8, 8), 
-        lidar_range = 2,
-        camera_range=2, 
-        render_mode = None, 
-        seed = None, 
-        num_obstacles = 6,
-        framerate = 10,
-        options = None,
+        num_robots: int = 3, 
+        width: int = 20, 
+        height: int = 20, 
+        target_location: tuple | None = (8, 8), 
+        lidar_range: float = 2,
+        camera_range: float = 2, 
+        render_mode: str | None = None, 
+        seed: object = None, 
+        num_obstacles: int = 6,
+        framerate: int = 10,
+        options: object = None,
     ):
         super().__init__()
-        self.multiagent_env = MultiAgentEnv()
-        #parameters
+        self.multiagent_env = None
+        
         self.render_mode = render_mode
         self.num_robots = num_robots
         self.env_width = width
@@ -67,33 +79,53 @@ class MainEnv(ParallelEnv):
         self.robot_width = 0.5
         self.robot_height = 0.5
         self.lidar_range = lidar_range
+        self.lidar_ray_count = 8
         self.camera_range = camera_range
         
         self.possible_agents = [f"robot_{i}" for i in range(num_robots)]
-        self.agents = self.possible_agents[:]
+        self.robot_positions: dict[str,tuple] = {}
+        self.robot_boxes: dict[str, Polygon] = {}
+        
+        self.robot_observation_space = Box(
+            low=0., high=self.lidar_range, 
+            shape=(self.lidar_ray_count,), 
+            dtype=np.float32
+            )
+        self.robot_action_space = Box(
+            low=-1.0, high=1.0, 
+            shape=(2,), dtype=np.float32
+            )
+        
         self.timestep = 0
         self.framerate = framerate
 
         # generating obstacles
+        self.env_box = box(0,0,self.env_width, self.env_height)
         self.obstacle_coords = []
-        self.generate_obstacles(self.num_obstacles, 2, 2)
-
-        # action and observation spaces
-        # self.action_spaces = {agent: Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32) for agent in self.possible_agents}
-        # self.observation_spaces = {agent: Box(low=0, high=1, shape=(width, height, 1), dtype=np.float32) for agent in self.possible_agents}
-        
-        # randomize robot positions
-        self.robot_positions = {f"robot_{i}": (np.random.randint(width), np.random.randint(height)) for i in range(num_robots)}
-
+        self.obstacles: list[Polygon] = []
+             
         #pygame render initialization
+        self.active = False
+        self.sorted_range_color_pairs = sorted(
+            [(self.lidar_range, self.colors['lidar_range']), 
+             (self.camera_range, self.colors['camera_range'])], 
+            reverse=True
+        )
         self.cell_size = 50 
-        self.window_size = (self.env_width * self.cell_size, self.env_height * self.cell_size)
+        self.window_size = (self.env_width * self.cell_size, 
+                            self.env_height * self.cell_size)
         self.screen = None  
         self.clock = None  
+        
+        # generate the environment
+        self.reset()
 
 #    @override
     def reset(self, seed=None, options = None):
+        self.resets_i += 1
+        print("resets", self.resets_i, end='\n')
         # resets the environment to its initial state.
+        self.active = True
         if seed is not None:
             np.random.seed(seed)
 
@@ -101,21 +133,27 @@ class MainEnv(ParallelEnv):
 
         self.multiagent_env = MultiAgentEnv()
 
-        # self.obstacle_coords = []
-        # self.generate_obstacles(self.num_obstacles, self.obstacle_width, self.obstacle_height)
+        self.regenerate_obstacles(self.num_obstacles, self.obstacle_width, 
+                                  self.obstacle_height)
 
-        # while True:
-        #     self.target_location = (np.random.randint(self.width), np.random.randint(self.height))
-        #     if not self.is_collision(*self.target_location):  # Ensure no collision
-        #         break
+        if self.target_location is None:
+            while True:
+                self.target_location = self.get_random_coord()
+                if not self.is_collision(*self.target_location):  # Ensure no collision
+                    break
                     
-        self.robot_positions = {
-            agent: (np.random.randint(self.env_width), np.random.randint(self.env_height))
-            for agent in self.possible_agents
-        }
+        self.robot_positions = {}
+        for agent_id in self.possible_agents:
+            while True:
+                coords = self.get_random_coord()
+                if not self.is_collision(*coords):
+                    self.robot_positions[agent_id] = coords
+                    break
 
+        observations = self.get_observations()
         info = {agent: {} for agent in self.agents}
-        return self.get_observations(), info
+        
+        return observations, info
 
 #    @override
     def step(self, actions):
@@ -124,51 +162,64 @@ class MainEnv(ParallelEnv):
         terminations = {a: False for a in self.agents}
         truncations = {a: False for a in self.agents}
 
-        for robot, action in actions.items():
+        for agent_id, action in actions.items():
 
             action = np.array(action).flatten()
 
-            x, y = self.robot_positions[robot]
+            x, y = self.robot_positions[agent_id]
+            self.robot_boxes[agent_id] = box(
+                x - self.robot_width/2, y - self.robot_height/2, 
+                x + self.robot_width/2, y + self.robot_height/2)
 
             dx, dy = action
 
             # move in bounds
-            new_x = np.clip(x + dx, 0, self.env_width - 1)
-            new_y = np.clip(y + dy, 0, self.env_height - 1)
+            new_x = np.clip(x + dx, 0, self.env_width)
+            new_y = np.clip(y + dy, 0, self.env_height)
+            
+            # TODO: include last robot velocity as part of observation
+            # TODO: penalize acceleration (turning)
+            
 
             # check collisions
-            if not self.is_collision(new_x, new_y):
-                self.robot_positions[robot] = (new_x, new_y)
+            if not self.is_collision(agent_id=agent_id, shape=Point(new_x, new_y)):
+                self.robot_positions[agent_id] = (new_x, new_y)
                 
                 exploration_reward = self.multiagent_env.calculate_reward(new_x, new_y)
                 self.multiagent_env.mark_visited(new_x, new_y)
 
             # check for target
-            if self.within_radius((new_x, new_y), self.target_location):
-                rewards[robot] = 100.0
+            if MainEnv.dist((x, y), self.target_location) < self.camera_range:
+                rewards[agent_id] = 100.0
                 terminations = {a: True for a in self.agents}
                 break
             else:
-                rewards[robot] = -0.001
+                rewards[agent_id] = -0.001
 
-        # check if all robots are done
-
+        observations = self.get_observations()
         info = {agent: {} for agent in self.agents}
-
+        
+        # deactivate terminated robots
         self.agents = [agent for agent in self.agents if not terminations[agent]]  
-        done = any(terminations.values())
 
-        return self.get_observations(), rewards, terminations, truncations, info
+        return observations, rewards, terminations, truncations, info
+
+    def get_random_coord(self, in_grid=True) -> tuple:
+        if in_grid:
+            return (np.random.randint(self.env_width), 
+                    np.random.randint(self.env_height))
+        else: 
+            return (np.random.random() * self.env_width,
+                    np.random.random() * self.env_height)
 
     def get_observations(self):
         #all observations for every robot
         observations = {}
-        for robot, position in self.robot_positions.items():
-            observations[robot] = self.make_observation(position)
+        for agent_id in self.robot_positions:
+            observations[agent_id] = self.get_robot_observation(agent_id)
         return observations
 
-    @staticmethod
-    def generate_rays(position, heading, n_rays=180, max_range=10.0):
+    def generate_rays(self, position, heading, n_rays=180, max_range=10.0):
         """Generate LineString rays for creating the LiDAR scans
 
         Args:
@@ -185,76 +236,129 @@ class MainEnv(ParallelEnv):
         dy = np.sin(angles) * max_range
         ray_starts = np.repeat([position], n_rays, axis=0)
         ray_ends = ray_starts + np.stack((dx, dy), axis=-1)
+        #ray_ends = np.clip(ray_ends, 0, self.env_width) # TODO: clip for rectangular env
         
-        return [LineString([start, end]) for start, end in zip(ray_starts, ray_ends)]
+        rays = [LineString([start, end]) for start, end in zip(ray_starts, ray_ends)]
+        
+        return rays
 
-    def make_observation(self, position):
+    def get_robot_observation(self, agent_id: str):
         heading = 0
-        n_rays = 4
+        coords = self.robot_positions[agent_id]
+        position = Point(coords)
         
-        rays: list[LineString] = MainEnv.generate_rays(
-            np.array(position), heading, n_rays, self.lidar_range)
+        rays: list[LineString] = self.generate_rays(
+            np.array(coords), heading, self.lidar_ray_count, self.lidar_range)
         
-        scan = np.full(n_rays, self.lidar_range, dtype=np.float64)
+        scan = np.full(self.lidar_ray_count, self.lidar_range, dtype=np.float64)
         
         for i, ray in enumerate(rays):
-            for obstacle in self.obstacle_coords:
-                x,y,w,h = obstacle
-                obstacle = box(x, y, x + w, y + h)
+            intersection = ray.intersection(self.env_box.boundary)
+            if not intersection.is_empty:
+                dist = position.distance(intersection)
+                if dist < scan[i]:
+                    scan[i] = dist
+            
+            for obstacle in self.obstacles:
+                #if position.distance(obstacle) > self.lidar_range
+                
                 intersection = ray.intersection(obstacle)
                 if not intersection.is_empty:
-                    dist = Point(position).distance(intersection)
+                    dist = position.distance(intersection)
                     if dist < scan[i]:
                         scan[i] = dist
-                        
-        # # observation around a robot's position
-        # x, y = position
-        # obs = np.zeros((self.width, self.height, 1), dtype=np.float32)
-        # for i in range(self.width):
-        #     for j in range(self.height):
-        #         if self.within_radius((x, y), (i, j)) and not self.is_collision(i, j):
-        #             obs[i, j, 0] = 1.0
-        
+            
+            for id in self.robot_boxes:
+                if id == agent_id:
+                    continue
+                
+                intersection = ray.intersection(self.robot_boxes[id])
+                if not intersection.is_empty:
+                    dist = position.distance(intersection)
+                    if dist < scan[i]:
+                        scan[i] = dist
+                 
         observations = scan
         return observations
 
-    def within_radius(self, pos1, pos2):
-        #for checking if target is within the radius of the robot
-        return np.linalg.norm(np.array(pos1) - np.array(pos2)) <= self.camera_range
+    @staticmethod
+    def dist(coord_1, coord_2):
+        return np.linalg.norm(np.array(coord_1) - np.array(coord_2))
 
-    def is_collision(self, x, y):
-        # check if robot collides with obstacle
-        for obs_x, obs_y, obs_w, obs_h in self.obstacle_coords:
-            # print(obs_x, obs_y, obs_w, obs_h, end=' | ')
-            # print(obs_x <= x <= obs_x + obs_w, end='/')
-            # print(obs_y <= y <= obs_y + obs_h)
-            if obs_x <= x <= obs_x + obs_w and obs_y <= y <= obs_y + obs_h:
-                # print("FOUND COLLISION------------------------------------")
+    def is_collision(
+        self, 
+        x: float=None, 
+        y: float=None, 
+        agent_id: str=None,
+        shape: Geometry=None,
+    ) -> bool:
+        """Checks if a point or an agent collides with an obstacle or an agent
+
+        Args:
+            x (float, optional): coordinates. Defaults to None.
+            y (float, optional): coordinates. Defaults to None.
+            agent_id (str, optional): _description_. Defaults to None.
+
+        Returns:
+            bool:
+        """
+        if shape is None:
+            shape = Point(x,y)
+            
+        for obstacle in self.obstacles:
+            if obstacle.intersects(shape):
                 return True
-        # print("NO COLLISION")
+        
+        for id in self.robot_boxes:
+            if id != agent_id and self.robot_boxes[id].intersects(shape):
+                return True
+            
         return False
 
-    def generate_obstacles(self, num_obstacles, obs_width, obs_height):
-        # generates the obstacles
-        obstacles = []
+    def regenerate_obstacles(self, num_obstacles, obs_width, obs_height):
+        # regenerates the obstacles
+        self.obstacle_coords = []
         for i in range(num_obstacles):
             while True:
-                obs_x = np.random.randint(0, self.env_width - obs_width + 1)
-                obs_y = np.random.randint(0, self.env_height - obs_height + 1)
-                new_obstacle = (obs_x, obs_y, obs_width, obs_height)
+                # obs_x = np.random.randint(0, self.env_width - obs_width + 1)
+                # obs_y = np.random.randint(0, self.env_height - obs_height + 1)
+                # new_obstacle_coords = (obs_x, obs_y, obs_width, obs_height)
+                coord = self.get_random_coord()
+                new_obstacle_coords = coord + (obs_width, obs_height)
+                
+                # test overlapping obstacles
+                self.obstacle_coords.append(new_obstacle_coords)
+                
+                minx, miny = coord
+                maxx, maxy = minx + obs_width, miny + obs_height
+                self.obstacles.append(box(minx, miny, maxx, maxy))
+                break
+                
                 if not any(self.is_collision(x, y) for x in range(obs_x, obs_x + obs_width) for y in range(obs_y, obs_y + obs_height)):
-                    self.obstacle_coords.append(new_obstacle)
+                    self.obstacle_coords.append(new_obstacle_coords)
                     break
     
     # @override
     @functools.lru_cache(maxsize=None)
-    def observation_space(self, agent):
-        return Box(low=0, high=1, shape=(self.env_width, self.env_height, 1), dtype=np.float32)
-
+    def observation_space(self, agent_id):
+        agent_type = agent_id[:5]
+        if agent_type == "robot":
+            return self.robot_observation_space
+        elif agent_type == "drone":
+            return Box()
+        else:
+            raise Exception("what kinda agent is this")
+        
     # @override
     @functools.lru_cache(maxsize=None)
-    def action_space(self, agent):
-        return Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32)
+    def action_space(self, agent_id):
+        agent_type = agent_id[:5]
+        if agent_type == "robot":
+            return self.robot_action_space
+        elif agent_type == "drone":
+            return Box()
+        else:
+            raise Exception("what kinda agent is this")
 
     # @override
     def render(self):
@@ -267,7 +371,7 @@ class MainEnv(ParallelEnv):
             pygame.display.set_caption("Robot Search Environment")
             self.clock = pygame.time.Clock()
 
-        self.screen.fill((255, 255, 255))  # White background
+        self.screen.fill(self.colors['bg'])
 
         fps = self.clock.get_fps()
         pygame.display.set_caption(f"FPS: {fps:.2f}")
@@ -276,32 +380,33 @@ class MainEnv(ParallelEnv):
         for x in range(self.env_width):
             for y in range(self.env_height):
                 rect = pygame.Rect(x * self.cell_size, y * self.cell_size, self.cell_size, self.cell_size)
-                pygame.draw.rect(self.screen, (200, 200, 200), rect, 1)  # Light gray grid
+                pygame.draw.rect(self.screen, self.colors['grid'], rect, 1)  # Light gray grid
 
-        # Draw LiDAR Range
-        for robot, (x, y) in self.robot_positions.items():
-            pygame.draw.circle(
-                self.screen,
-                (120, 120, 180),
-                (x * self.cell_size, y * self.cell_size),
-                self.cell_size * self.lidar_range
-            )
+        # Draw LiDAR and Camera Range
+        for range_, color in self.sorted_range_color_pairs:
+            for robot, (x, y) in self.robot_positions.items():
+                pygame.draw.circle(
+                    self.screen,
+                    color,
+                    (x * self.cell_size, y * self.cell_size),
+                    self.cell_size * range_
+                )
 
         # Draw obstacles (black)
         for obs_x, obs_y, obs_w, obs_h in self.obstacle_coords:
             pygame.draw.rect(
                 self.screen,
-                (0, 0, 0),  # Black color for obstacles
+                self.colors['obstacle'],  # Black color for obstacles
                 pygame.Rect(obs_x * self.cell_size, obs_y * self.cell_size, obs_w * self.cell_size, obs_h * self.cell_size)
             )
 
         # Draw target (red)
         pygame.draw.circle(
             self.screen,
-            (255, 0, 0),  # Red for the target
-            (self.target_location[0] * self.cell_size + self.cell_size // 2, 
-             self.target_location[1] * self.cell_size + self.cell_size // 2),
-            self.cell_size // 3
+            self.colors['target'],  # Red for the target
+            (self.target_location[0] * self.cell_size, 
+             self.target_location[1] * self.cell_size),
+            self.cell_size // 4
         )
         
         # Draw robots (blue)
@@ -310,7 +415,7 @@ class MainEnv(ParallelEnv):
             bot_width, bot_height = self.robot_width*self.cell_size, self.robot_height*self.cell_size
             pygame.draw.rect(
                 self.screen,
-                (0, 0, 255), # Blue for robots
+                self.colors['robot'], # Blue for robots
                 pygame.Rect(
                     x_screen - bot_width // 2,
                     y_screen - bot_height // 2,
@@ -331,10 +436,13 @@ class MainEnv(ParallelEnv):
         self.clock.tick(self.framerate)  # Limit framerate
 
         for event in pygame.event.get():
-            if event.type == pygame.QUIT:
+            if event.type == pygame.QUIT or \
+                event.type == pygame.KEYDOWN and event.key == pygame.K_q:
+                print("Quitting")
                 self.close()
 
     def close(self):
+        self.active = False
         if self.screen is not None:
             pygame.quit()
             self.screen = None
@@ -347,7 +455,7 @@ class PathEnv(MainEnv):
             height=20, 
             target_location=(19, 19), 
             lidar_range=2,
-            camera_range=0, 
+            camera_range=0.5, 
             render_mode = "human", 
             seed = None, 
             num_obstacles=0,
@@ -357,7 +465,7 @@ class PathEnv(MainEnv):
         
         self.obstacle_coords = [
             (0, 0, 20, 3),
-            (0, 5, 14, 15),
+            (0, 6, 14, 15),
             (17, 2, 3, 15),
         ]
         

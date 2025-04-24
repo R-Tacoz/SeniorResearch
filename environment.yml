@@ -1,9 +1,9 @@
 name: SR_Env
 channels:
-  - defaults
-  - pytorch
   - nvidia
+  - pytorch
   - conda-forge
+  - defaults
   - nodefaults
 dependencies:
   - pygame=2.5.2
