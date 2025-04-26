@@ -24,9 +24,22 @@ def on_release(key):
 def main():
     listener = keyboard.Listener(on_press, on_release)
     listener.start()
-
+    
+    np.set_printoptions(linewidth=200)
+    
     #env = PathEnv(framerate=FRAMERATE)
-    env = MainEnv(framerate=FRAMERATE, render_mode='human')
+    env = MainEnv(
+        num_robots = 3, 
+        width = 18, 
+        height = 18, 
+        target_location = None, 
+        # lidar_range = 5,
+        # camera_range = 8, 
+        # success_range = 1,
+        num_obstacles=6,        
+        framerate=FRAMERATE, 
+        render_mode='human'
+    )
 
     for _ in range(SIM_LENGTH):
         velo_command = np.array([x_input, y_input], dtype=np.float64)
@@ -36,7 +49,7 @@ def main():
         actions = {robot: velo_command if i == 0 else np.zeros((2,)) for i,robot in enumerate(env.agents)}
         obs, rewards, terms, truncs, info = env.step(actions)
         
-        print(obs['robot_0'], end='\r')
+        print(f"{obs['robot_0']} | {rewards['robot_0']}", end='\r')
         #print(f"{env.robot_positions['robot_0'][0]:.2f}, {env.robot_positions['robot_0'][1]:.2f}", end='\r')
         env.render()
 

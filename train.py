@@ -59,7 +59,8 @@ def main():
         num_obstacles=10,
         target_location=None, 
         lidar_range=5,
-        camera_range=1, 
+        camera_range=8,
+        success_range=1,
         render_mode="human"
         )
     # parallel_api_test(parallel_env)
@@ -76,11 +77,11 @@ def main():
         #     "net_arch": [32, 32]
         # },
         verbose=1,
-        learning_rate=0.0003,
+        learning_rate=0.0001,
         gamma=0.99,
         n_steps=256,
-        batch_size=16,
-        n_epochs=5,
+        batch_size=32,
+        n_epochs=10,
         device='cpu', # says gpu only for CNN policies
     )
 
@@ -89,7 +90,7 @@ def main():
     print("Action Space:", env.action_space)
 
     reward_tracker = RewardTrackerCallback(check_freq=100, verbose=1)
-    model.learn(total_timesteps=256*30, callback=reward_tracker)
+    model.learn(total_timesteps=256*150, callback=reward_tracker)
 
     print(f"Training complete. Saving...")
     model.save(SAVE_DIR)

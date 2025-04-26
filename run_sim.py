@@ -19,11 +19,12 @@ def main():
     parallel_env = MainEnv(
         num_robots=3, 
         width=20, 
-        height= 20, 
+        height=20, 
         num_obstacles=10,
         target_location=None, 
         lidar_range=5,
-        camera_range=1,
+        camera_range=8,
+        success_range=1,
         render_mode="human"
         )
 
@@ -42,8 +43,6 @@ def main():
         env.render() 
         pygame.time.delay(100)
 
-        # if any(terms):
-        #         break
 
 if __name__=="__main__":
     main()
