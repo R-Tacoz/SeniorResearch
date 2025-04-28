@@ -10,7 +10,10 @@ from stable_baselines3.common.env_checker import check_env
 from stable_baselines3.common.policies import ActorCriticCnnPolicy, ActorCriticPolicy, BasePolicy, MultiInputActorCriticPolicy
 from pettingzoo.utils import parallel_to_aec
 from pettingzoo.test import parallel_api_test
+import torch
+from torch import nn
 from utils.envs import MainEnv
+from utils.agents import AgentCNN
 
 # Callback to track average reward over training
 class RewardTrackerCallback(BaseCallback):
@@ -73,9 +76,10 @@ def main():
     model = PPO(
         "MlpPolicy", # see stable_baselines3.common.policies.ActorCriticPolicy
         env,
-        # policy_kwargs={
-        #     "net_arch": [32, 32]
-        # },
+        policy_kwargs=dict(
+            net_arch = [64, 64, 32],
+            activation_fn = nn.ReLU
+        ),
         verbose=1,
         learning_rate=0.0001,
         gamma=0.99,
@@ -84,6 +88,30 @@ def main():
         n_epochs=10,
         device='cpu', # says gpu only for CNN policies
     )
+    
+    # model = PPO(
+    #     "CnnPolicy", # see stable_baselines3.common.policies.ActorCriticPolicy
+    #     env,
+    #     policy_kwargs=dict(
+    #         features_extractor_class=AgentCNN,
+    #         features_extractor_kwargs=dict(
+    #             features_dim=128
+    #         ),
+    #         net_arch = dict(
+    #             pi=[128, 128, 64],
+    #             vf=[128, 128, 64],
+    #         ),
+    #         activation_fn = nn.ReLU,
+            
+    #     ),
+    #     verbose=1,
+    #     learning_rate=0.0001,
+    #     gamma=0.99,
+    #     n_steps=256,
+    #     batch_size=32,
+    #     n_epochs=10,
+    #     device='cpu', # says gpu only for CNN policies
+    # )
 
     print(f"Setup complete. Trained model will be saved to ./{SAVE_DIR}")
     print("Observation Space:", env.observation_space)

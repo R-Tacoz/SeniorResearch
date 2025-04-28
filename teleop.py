@@ -40,16 +40,17 @@ def main():
         framerate=FRAMERATE, 
         render_mode='human'
     )
+    
 
     for _ in range(SIM_LENGTH):
         velo_command = np.array([x_input, y_input], dtype=np.float64)
         if (x_input | y_input) != 0:
             velo_command /= np.linalg.norm(velo_command) / MAX_VELO # normalize magnitude
         
-        actions = {robot: velo_command if i == 0 else np.zeros((2,)) for i,robot in enumerate(env.agents)}
+        actions = {robot: velo_command if i == 0 else np.zeros((2,), dtype=np.float64) for i,robot in enumerate(env.agents)}
         obs, rewards, terms, truncs, info = env.step(actions)
         
-        print(f"{obs['robot_0']} | {rewards['robot_0']}", end='\r')
+        # print(f"{obs['robot_0']} | {rewards['robot_0']}", end='\r')
         #print(f"{env.robot_positions['robot_0'][0]:.2f}, {env.robot_positions['robot_0'][1]:.2f}", end='\r')
         env.render()
 
