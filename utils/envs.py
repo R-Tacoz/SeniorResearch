@@ -1,23 +1,25 @@
 import time
 import math
 import multiprocessing as mp # horrible idea
-import numba 
 from numba import jit
+from numba.np.extensions import cross2d
 import numpy as np
 import pygame
 import functools
 from pettingzoo.utils.env import ParallelEnv
 from gymnasium.spaces import Box, Discrete
+# TODO: atp idt we need shapely stuff anymore. we can clean it out of code when everything works
 import shapely
 from shapely.geometry import LineString, Point, box, Polygon
 from shapely import Geometry
 from scipy.spatial import distance, KDTree
 from utils.agents import RandomAgent, MLPAgent, ConvAgent
 
+# TODO: eventually move all coords_t usages to np.ndarray
 coords_t = tuple[float, float]
 id_t = str
 EPSILON = 1e-2 # for division by distance in reward
-LIDAR_RAY_COUNT = 180
+LIDAR_RAY_COUNT = 90
 
 class MainEnv(ParallelEnv):
     metadata = {"render_modes": ["human"], "name": "robot_search_v0"}
@@ -91,7 +93,13 @@ class MainEnv(ParallelEnv):
         
         # simulation environment data
         self.env_box = box(0,0,self.env_width, self.env_height)
-        self.env_boundary_vecs = []
+        self.env_dims = (self.env_width, self.env_height)
+        self.env_boundary_vecs = [ # (p1, p2, edge_vec)
+            (np.array([0,0]), np.array([self.env_width, 0]), np.array([self.env_width, 0])),
+            (np.array([self.env_width,0]), np.array([self.env_width, self.env_height]), np.array([0, self.env_height])),
+            (np.array([self.env_width,self.env_height]), np.array([0, self.env_height]), np.array([-self.env_width, 0])),
+            (np.array([0, self.env_height]), np.array([0, 0]), np.array([0, -self.env_height])),
+        ]
         
         # TODO: when the dust settles, we only need one obstacle data variable
         self.obstacle_coords: list[coords_t] = [] # basic calculation
@@ -101,11 +109,13 @@ class MainEnv(ParallelEnv):
         
         self.obstacle_centers: np.ndarray = [] # faster ray intersection
         self.obstacle_tree: KDTree = None
-        self.approx_obs_radius: float = (self.obstacle_height + self.obstacle_width) * math.sqrt(2)
+        # TODO: approximate obstacle radius for each obstacle as a ndarray
+        self.approx_obs_radius: float = np.linalg.norm((self.obstacle_width/2, self.obstacle_height/2))
         # TODO: look into quadtree and K-D-trees for obstacle querying
         # ^^^ :) maybe not. lets recheck if we increase env size past 20x20 and 8 obstacles 
         
         self.possible_agents: list[id_t] = [f"robot_{i}" for i in range(num_robots)]
+        self.agents = self.possible_agents[:]
         self.robot_positions: dict[id_t, coords_t] = {}
         self.robot_boxes: dict[id_t, Polygon] = {}
         self.robot_box_centers: dict[id_t, np.ndarray] = {}
@@ -120,10 +130,10 @@ class MainEnv(ParallelEnv):
             shape=(2,), dtype=np.float32
             )
         
-        angles = np.linspace(-np.pi, np.pi, self.lidar_ray_count)
-        dx = np.cos(angles) * self.lidar_range
-        dy = np.sin(angles) * self.lidar_range
-        self.lidar_ray_displacements = np.stack((dx, dy), axis=-1)
+        self.lidar_ray_indices = np.arange(self.lidar_ray_count)
+        self.lidar_angles = np.linspace(-np.pi, np.pi, self.lidar_ray_count)
+        self.lidar_ray_directions = np.stack((np.cos(self.lidar_angles), np.sin(self.lidar_angles)), axis=-1)
+        self.lidar_ray_displacements = self.lidar_ray_directions * self.lidar_range
         self.lidar_scan_buffer: np.ndarray = np.zeros(self.lidar_ray_count, dtype=np.float64)
         
         self.ticks_elapsed = 0
@@ -133,7 +143,7 @@ class MainEnv(ParallelEnv):
         # TODO: in actual implementation, these are agent data that are stored in each agent
         self.robot_last_velocities: dict[id_t, tuple[float,float]] = {}
         
-        self.sparse_visited_coords: list[coords_t] = []
+        self.sparse_visited_coords: np.ndarray = None
         self.visiteds_min_dist: float = 2 * self.robot_width
              
         #pygame render initialization
@@ -165,14 +175,7 @@ class MainEnv(ParallelEnv):
 
         self.agents = self.possible_agents[:]
 
-        self.sparse_visited_coords = []
-
-        self.regenerate_obstacles(self.num_obstacles, self.obstacle_width, 
-                                  self.obstacle_height)
-        
-        self.obstacle_centers = np.array([
-            obstacle.centroid.coords[0] for obstacle in self.obstacles
-        ])  # shape (num_obstacles, 2)
+        self.regenerate_obstacles()
         
         # self.obstacle_tree = KDTree(self.obstacle_centers)
 
@@ -183,13 +186,15 @@ class MainEnv(ParallelEnv):
                     break
                   
         self.robot_positions = {}
+        self.sparse_visited_coords = np.empty((0,2))
         for agent_id in self.possible_agents:
             while True:
                 coords = self.get_random_coord(in_grid=False)
                 if not self.is_collision(coords):
+                    point = np.array(coords)
                     self.robot_positions[agent_id] = coords
-                    self.robot_box_centers[agent_id] = np.array(coords)
-                    self.sparse_visited_coords.append(coords)
+                    self.robot_box_centers[agent_id] = point
+                    self.sparse_visited_coords = np.append(self.sparse_visited_coords, [point], axis=0)
                     break
                 
             self.robot_last_velocities[agent_id] = (0,0)
@@ -230,6 +235,7 @@ class MainEnv(ParallelEnv):
             new_x = np.clip(x + dx, 0, self.env_width)
             new_y = np.clip(y + dy, 0, self.env_height)
             new_coords: coords_t = (new_x, new_y)
+            new_coords_a = np.array(new_coords)
             
             move_time += (t1:=time.perf_counter()) - t0
 
@@ -255,12 +261,12 @@ class MainEnv(ParallelEnv):
                 move_time += (t1:=time.perf_counter()) - t0
 
                 # update visited points
-                dist_to_closest_visited = self.distance_to_nearest_visited(new_coords)
+                dist_to_closest_visited = self.distance_to_nearest_visited(new_coords_a)
                 if dist_to_closest_visited > self.visiteds_min_dist:
-                    self.sparse_visited_coords.append(new_coords)
+                    self.sparse_visited_coords = np.append(self.sparse_visited_coords, [new_coords_a], axis=0)
                     
             else:
-                dist_to_closest_visited = self.distance_to_nearest_visited((x, y))
+                dist_to_closest_visited = self.distance_to_nearest_visited(np.array([x, y]))
             visiteds_time += (t0:=time.perf_counter()) - t1
                      
             # get observations    
@@ -275,7 +281,9 @@ class MainEnv(ParallelEnv):
             obs_time += (t1:=time.perf_counter()) - t0
             
             # calculate reward
-            rewards[agent_id] = self.calc_reward(agent_id, new_coords, attempted_collision, target_dist, target_in_sight, dist_to_closest_visited, acceleration)
+            rewards[agent_id] = self.calc_reward(
+                agent_id, new_coords, attempted_collision, target_dist, 
+                target_in_sight, dist_to_closest_visited, acceleration)
             
             reward_time += (t0:=time.perf_counter()) - t1
       
@@ -296,6 +304,99 @@ class MainEnv(ParallelEnv):
         # print(f"m: {move_time:.4f} c: {collision_time:.4f} v: {visiteds_time:.4f} r: {reward_time:.4f} o: {obs_time:.4f}", end='\r')  
 
         return observations, rewards, terminations, truncations, info
+
+    def get_observations(self, agent_id: id_t) -> tuple[np.ndarray, list]:
+        heading = 0
+        coords = self.robot_positions[agent_id]
+        position = Point(coords)
+        
+        # LiDAR scan
+        # TODO: test scanning every few ticks
+        # nearby_obstacles_indices = self.obstacle_tree.query_ball_point(
+        #     coords, self.lidar_range + self.approx_obs_radius)
+        
+        rays = self.generate_rays(
+            coords, heading, self.lidar_ray_count, self.lidar_range)
+        
+        # lidar_scan = self.lidar_scan_buffer
+        # lidar_scan.fill(self.lidar_range)
+        lidar_scan = self.fast_ray_cast(coords)
+        
+        # TODO: invert loop order
+        
+        # for i, ray in enumerate(rays):
+        #     # walls
+        #     intersection = ray.intersection(self.env_box.boundary)
+        #     if not intersection.is_empty:
+        #         dist = position.distance(intersection)
+        #         if dist < lidar_scan[i]:
+        #             lidar_scan[i] = dist
+            
+        # # obstacles
+        # for obstacle in self.obstacles:
+        # # for idx in nearby_obstacles_indices:
+        #     # obstacle = self.obstacles[idx]
+        #     if position.distance(obstacle) > self.lidar_range:
+        #         continue
+            
+        #     for i, ray in enumerate(rays):
+        #         intersection = ray.intersection(obstacle)
+        #         if not intersection.is_empty:
+        #             dist = position.distance(intersection)
+        #             if dist < lidar_scan[i]:
+        #                 lidar_scan[i] = dist
+        
+        t0 = time.perf_counter() * 1000
+        # other agents
+        for id in self.robot_boxes:
+            if id == agent_id or position.distance(self.robot_boxes[id]) > self.lidar_range:
+                continue
+            
+            for i, ray in enumerate(rays):
+                intersection = ray.intersection(self.robot_boxes[id])
+                if not intersection.is_empty:
+                    dist = position.distance(intersection)
+                    if dist < lidar_scan[i]:
+                        lidar_scan[i] = dist
+                        
+        lidar_scan /= self.lidar_range # normalize
+        
+        t1 = time.perf_counter() * 1000
+        
+        # Camera detection
+        camera_detection = np.array([1, 0]) # default if no detection is camera range (normalized), zero heading
+        target_dist = distance.euclidean(coords, self.target_location)
+        in_sight = False
+        if target_dist < self.camera_range:
+            # check no obstacles block view
+            in_sight = True
+            sightline = LineString([coords, self.target_location])
+            for obstacle in self.obstacles:
+                if sightline.intersects(obstacle):
+                    in_sight = False
+                    break
+                
+            if in_sight:
+                x = self.target_location[0] - coords[0]
+                y = self.target_location[1] - coords[1]
+                target_heading = math.atan2(y,x) # assume robot is facing right where heading=0
+                
+                camera_detection[0] = target_dist / self.camera_range
+                camera_detection[1] = target_heading / math.pi
+                
+        # Kinematic information
+        last_velocity = np.array(self.robot_last_velocities[agent_id])
+        
+        t2 = time.perf_counter() * 1000
+        
+        print(f"robo: {t1-t0:.4f} rest: {t2-t0:.4f}", end='\r')
+        
+        # Displacement history
+        # TODO: maybe displacement vector to average of the visiteds
+                 
+        data = [target_dist, in_sight] # extra data for reward calculation 
+        observations = np.concatenate([lidar_scan, camera_detection, last_velocity], axis=0)
+        return observations, data
 
     def get_random_coord(self, in_grid=True) -> tuple:
         if in_grid:
@@ -332,165 +433,78 @@ class MainEnv(ParallelEnv):
         
         return rays
 
+    #@jit(nopython=True)
     def fast_ray_cast(self, origin):
         origin = np.array(origin)
         scan = self.lidar_scan_buffer
         scan.fill(self.lidar_range)
         
-        for i, center in enumerate(self.obstacle_centers):
-            if np.linalg.norm(center - origin) + self.approx_obs_radius > self.lidar_range:
+        # obstacles
+        obstacle_distances: np.ndarray = np.linalg.norm(self.obstacle_centers - origin, axis=1) # broadcasts
+        obstacle_distances -= self.approx_obs_radius # can be converted to an array
+        close_obstacle_center_indices = (obstacle_distances <= self.lidar_range).nonzero()[0]
+        print(f"d0: {obstacle_distances[0]:.2f} oc: {close_obstacle_center_indices}", end=" ")
+        
+        t0 = time.perf_counter() * 1000
+        for idx in close_obstacle_center_indices:     
+        # for idx, center in enumerate(self.obstacle_centers):
+        #     if np.linalg.norm(center - origin) > self.lidar_range + self.approx_obs_radius:
+        #         continue
+            # select rays that face the obstacle
+            # this assumes obstacles are all convex. if they aren't, we can add another data variable to indicate it
+            displacement = self.obstacle_centers[idx] - origin
+            angle_to_obstacle = np.arctan2(displacement[1], displacement[0])
+            delta_angles = np.mod(self.lidar_angles - angle_to_obstacle + np.pi, 2*np.pi) - np.pi
+            mask = (delta_angles >= -np.pi/2) & (delta_angles <= np.pi/2)
+            indices = np.where(mask)[0]
+            # indices = self.lidar_ray_indices
+            
+            for p1, p2, edge_vec in self.obstacle_edge_vectors[idx]:
+                MainEnv.write_to_lidar_scan(scan, indices, self.lidar_ray_directions, self.lidar_range, origin, edge_vec, p1)
+                # for j, ray_dir in enumerate(self.lidar_ray_directions):
+                # for j in indices:
+                #     ray_dir = self.lidar_ray_directions[j]
+                #     dist = vector_intersection_distance(origin, ray_dir, edge_vec, p1)
+                    
+                #     # rxs = np.cross(ray_dir, edge_vec)
+                    
+                #     # if abs(rxs) < 1e-10:
+                #     #     continue
+                    
+                #     # t = np.cross(p1 - origin, edge_vec) / rxs
+                #     # s = np.cross(p1 - origin, ray_dir) / rxs
+                    
+                #     if 0 <= dist <= self.lidar_range:# and 0 <= s <= 1:
+                #         scan[j] = min(scan[j], dist)
+        t1 = time.perf_counter() * 1000
+        
+        # environment boundaries          
+        for i, (p1, p2, edge_vec) in enumerate(self.env_boundary_vecs):            
+            perp_dim = (i+1) % 2 # dimension perpendicular to this edge
+            if self.lidar_range <= origin[perp_dim] <= self.env_dims[perp_dim] - self.lidar_range:
                 continue
             
-            for p1, p2, edge_vec in self.obstacle_edge_vectors[i]:
-                for j, ray_dir in enumerate(self.lidar_ray_displacements/self.lidar_range):
-                    rxs = np.cross(ray_dir, edge_vec)
-                    
-                    if abs(rxs) < 1e-10:
-                        continue
-                    
-                    t = np.cross(p1 - origin, edge_vec) / rxs
-                    s = np.cross(p1 - origin, ray_dir) / rxs
-                    
-                    if 0 <= t <= self.lidar_range and 0 <= s <= 1:
-                        scan[j] = min(scan[j], t)
+            indices = self.lidar_ray_indices
+            MainEnv.write_to_lidar_scan(scan, indices, self.lidar_ray_directions, self.lidar_range, origin, edge_vec, p1)
+            # for j, ray_dir in enumerate(self.lidar_ray_directions):
+                
+        t2 = time.perf_counter() * 1000
+        
+        print(f"obs: {t1-t0:.4f} bound: {t2-t1:.4f}", end=" ")
+            
                         
         # TODO: include env walls and other agents as vectorized intersection checks
                         
-        return scan          
-    
+        return scan     
 
     @staticmethod
-    def lidar_worker(args):
-        print('work')
-        rays_chunk, agent_position, agent_id, obstacle_centers, obstacles, robot_boxes, robot_box_centers, env_box, lidar_range = args
-        lidar_scan_chunk = np.full((len(rays_chunk),), lidar_range, dtype=np.float64)
-        agent_xy = np.array([agent_position.x, agent_position.y])
-
-        for i, ray in enumerate(rays_chunk):
-            # Check environment walls first
-            intersection = ray.intersection(env_box.boundary)
-            if not intersection.is_empty:
-                dist = agent_position.distance(intersection)
-                if dist < lidar_scan_chunk[i]:
-                    lidar_scan_chunk[i] = dist
-
-            # Vectorized obstacle filtering
-            delta_obs = obstacle_centers - agent_xy
-            dists_obs = np.linalg.norm(delta_obs, axis=1)
-            close_obs_idx = np.where(dists_obs < lidar_range)[0]
-
-            for idx in close_obs_idx:
-                obstacle = obstacles[idx]
-                intersection = ray.intersection(obstacle)
-                if not intersection.is_empty:
-                    dist = agent_position.distance(intersection)
-                    if dist < lidar_scan_chunk[i]:
-                        lidar_scan_chunk[i] = dist
-
-            # Vectorized robot filtering
-            for robot_id, robot_box in robot_boxes.items():
-                if robot_id == agent_id:
-                    continue
-                delta_robot = robot_box_centers[robot_id] - agent_xy
-                dist_robot = np.linalg.norm(delta_robot)
-                if dist_robot > lidar_range:
-                    continue
-
-                intersection = ray.intersection(robot_box)
-                if not intersection.is_empty:
-                    dist = agent_position.distance(intersection)
-                    if dist < lidar_scan_chunk[i]:
-                        lidar_scan_chunk[i] = dist
-                        
-        print('done')
-
-        return lidar_scan_chunk
-
-    def get_observations(self, agent_id: id_t) -> tuple[np.ndarray, list]:
-        heading = 0
-        coords = self.robot_positions[agent_id]
-        position = Point(coords)
-        
-        # LiDAR scan
-        # TODO: test scanning every few ticks
-        # nearby_obstacles_indices = self.obstacle_tree.query_ball_point(
-        #     coords, self.lidar_range + self.approx_obs_radius)
-        
-        rays = self.generate_rays(
-            coords, heading, self.lidar_ray_count, self.lidar_range)
-        
-        # lidar_scan = self.lidar_scan_buffer
-        # lidar_scan.fill(self.lidar_range)
-        lidar_scan = self.fast_ray_cast(coords)
-        
-        # TODO: invert loop order
-        
-        for i, ray in enumerate(rays):
-            # walls
-            intersection = ray.intersection(self.env_box.boundary)
-            if not intersection.is_empty:
-                dist = position.distance(intersection)
-                if dist < lidar_scan[i]:
-                    lidar_scan[i] = dist
-            
-        # # obstacles
-        # for obstacle in self.obstacles:
-        # # for idx in nearby_obstacles_indices:
-        #     # obstacle = self.obstacles[idx]
-        #     if position.distance(obstacle) > self.lidar_range:
-        #         continue
-            
-        #     for i, ray in enumerate(rays):
-        #         intersection = ray.intersection(obstacle)
-        #         if not intersection.is_empty:
-        #             dist = position.distance(intersection)
-        #             if dist < lidar_scan[i]:
-        #                 lidar_scan[i] = dist
-            
-        # other agents
-        for id in self.robot_boxes:
-            if id == agent_id or position.distance(self.robot_boxes[id]) > self.lidar_range:
-                continue
-            
-            for i, ray in enumerate(rays):
-                intersection = ray.intersection(self.robot_boxes[id])
-                if not intersection.is_empty:
-                    dist = position.distance(intersection)
-                    if dist < lidar_scan[i]:
-                        lidar_scan[i] = dist
-                        
-        lidar_scan /= self.lidar_range # normalize
-        
-        # Camera detection
-        camera_detection = np.array([1, 0]) # default if no detection is camera range (normalized), zero heading
-        target_dist = distance.euclidean(coords, self.target_location)
-        in_sight = False
-        if target_dist < self.camera_range:
-            # check no obstacles block view
-            in_sight = True
-            sightline = LineString([coords, self.target_location])
-            for obstacle in self.obstacles:
-                if sightline.intersects(obstacle):
-                    in_sight = False
-                    break
-                
-            if in_sight:
-                x = self.target_location[0] - coords[0]
-                y = self.target_location[1] - coords[1]
-                target_heading = math.atan2(y,x) # assume robot is facing right where heading=0
-                
-                camera_detection[0] = target_dist / self.camera_range
-                camera_detection[1] = target_heading / math.pi
-                
-        # Kinematic information
-        last_velocity = np.array(self.robot_last_velocities[agent_id])
-        
-        # Displacement history
-        # TODO: maybe displacement vector to average of the visiteds
-                 
-        data = [target_dist, in_sight] # extra data for reward calculation that robots can't observe
-        observations = np.concatenate([lidar_scan, camera_detection, last_velocity], axis=0)
-        return observations, data
+    @jit(nopython=True)
+    def write_to_lidar_scan(scan, indices_array, lidar_ray_directions, lidar_range, origin, edge_vec, edge_start):
+        for idx in indices_array:
+            ray_direction = lidar_ray_directions[idx]
+            dist = vector_intersection_distance(origin, ray_direction, edge_vec, edge_start)
+            if 0 <= dist <= lidar_range:
+                scan[idx] = min(scan[idx], dist)  
 
     def is_collision(
         self, 
@@ -532,11 +546,12 @@ class MainEnv(ParallelEnv):
     # @staticmethod
     # @jit(nopython=True)
     def distance_to_nearest_visited(self, coords):
-        dist = min([
-            distance.euclidean(coords, visited_coords) 
-            for visited_coords in self.sparse_visited_coords
-        ])
+        # dist = min([
+        #     distance.euclidean(coords, visited_coords) 
+        #     for visited_coords in self.sparse_visited_coords
+        # ])
         
+        dist = np.min(np.linalg.norm(self.sparse_visited_coords - coords, axis=-1))
         
         
         # min_dist = float('inf')
@@ -593,22 +608,33 @@ class MainEnv(ParallelEnv):
             
         return reward
   
-    def regenerate_obstacles(self, num_obstacles, obs_width, obs_height):
+    def regenerate_obstacles(self, obstacle_coords=None):
         # regenerates the obstacles
-        self.obstacle_coords = []
-        for i in range(num_obstacles):
-            while True:
-                coord = self.get_random_coord()
-                new_obstacle_coords = coord + (obs_width, obs_height)
+        if obstacle_coords is None:
+            self.obstacle_coords = []
+            for i in range(self.num_obstacles):
+                while True:
+                    coord = self.get_random_coord()
+                    new_obstacle_coords = coord + (self.obstacle_width, self.obstacle_height)
+                    
+                    # test overlapping obstacles
+                    self.obstacle_coords.append(new_obstacle_coords)
+                    
+                    minx, miny = coord
+                    maxx, maxy = minx + self.obstacle_width, miny + self.obstacle_height
+                    self.obstacle_coords_points.append((minx, miny, maxx, maxy))
+                    self.obstacles.append(box(minx, miny, maxx, maxy))
+                    break
+        else:
+            self.obstacle_coords = obstacle_coords
+            for (x,y,w,h) in self.obstacle_coords:
+                maxx, maxy = x + w, y + h
+                self.obstacle_coords_points.append((x,y,maxx,maxy))
+                self.obstacles.append(box(x,y,maxx,maxy)) 
                 
-                # test overlapping obstacles
-                self.obstacle_coords.append(new_obstacle_coords)
-                
-                minx, miny = coord
-                maxx, maxy = minx + obs_width, miny + obs_height
-                self.obstacle_coords_points.append((minx, miny, maxx, maxy))
-                self.obstacles.append(box(minx, miny, maxx, maxy))
-                break
+        self.obstacle_centers = np.array([
+            obstacle.centroid.coords[0] for obstacle in self.obstacles
+        ])  # shape (num_obstacles, 2)
             
         for minx, miny, maxx, maxy in self.obstacle_coords_points: 
             edges = [
@@ -678,6 +704,20 @@ class MainEnv(ParallelEnv):
                     (x * self.cell_size, y * self.cell_size),
                     self.cell_size * range_
                 )
+            
+        # Draw LiDAR points
+        if self.num_agents == 1:
+            origin = self.robot_positions['robot_0']
+            scan = np.repeat(self.lidar_scan_buffer.reshape(-1,1), 2, axis=1)
+            for coord in np.multiply(self.lidar_ray_displacements, scan):
+                coord[0] += origin[0]
+                coord[1] += origin[1]
+                pygame.draw.circle(
+                    self.screen,
+                    (0,255,0),
+                    (coord[0] * self.cell_size, coord[1] * self.cell_size),
+                    3,
+                )
 
         # Draw obstacles (black)
         for obs_x, obs_y, obs_w, obs_h in self.obstacle_coords:
@@ -697,6 +737,7 @@ class MainEnv(ParallelEnv):
         )
         
         # Draw visited points
+        # print(self.sparse_visited_coords)
         for (x, y) in self.sparse_visited_coords:
             pygame.draw.circle(
                 self.screen,
@@ -750,23 +791,62 @@ class PathEnv(MainEnv):
             framerate=framerate,
             options = None
             )
+        self.reset()
         
-        self.obstacle_coords = [
+    def reset(self):
+        self.resets_i += 1
+        self.ticks_elapsed = 0
+        self.active = True
+
+        self.agents = self.possible_agents[:]
+
+        self.robot_positions = {f"robot_{i}": tuple([0, 3.5]) for i in range(self.num_robots)}
+        self.sparse_visited_coords = np.empty((0,2))
+        
+        for agent_id in self.robot_positions:
+            point = self.robot_positions[agent_id]
+            self.robot_box_centers[agent_id] = point
+            self.sparse_visited_coords = np.append(self.sparse_visited_coords, [point], axis=0)             
+            self.robot_last_velocities[agent_id] = (0,0)
+        
+        obstacle_coords = [
             (0, 0, 20, 3),
             (0, 6, 14, 15),
             (17, 2, 3, 15),
         ]
-        self.obstacles = []
-        for coords in self.obstacle_coords:
-            minx, miny = coords
-            maxx, maxy = minx + self.obstacle_width, miny + self.obstacle_height
-            self.obstacles.append(box(minx, miny, maxx, maxy))
+        self.regenerate_obstacles(obstacle_coords)
         
-        self.robot_positions = {f"robot_{i}": (0, 3.5) for i in range(self.num_robots)}
+        observations = {id: self.get_observations(id)[0] for id in self.agents}
+        self.obs_r = observations
+        info = {id: {} for id in self.agents}
+        
+        return observations, info
         
 class OpenEnv(MainEnv):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         
         self.obstacle_coords = []
-        self.obstacles = []
+        self.obstacles = []   
+
+@jit(nopython=True, parallel=True)
+def vector_intersection_distance(
+    origin: np.ndarray, 
+    direction_vec: np.ndarray, 
+    other_vec: np.ndarray, 
+    other_vec_start: np.ndarray
+) -> float:
+    vec_start_disp = other_vec_start - origin
+    # rxs = np.cross(direction_vec, other_vec)
+    rxs = cross2d(direction_vec, other_vec)
+    
+    if abs(rxs.item()) < 1e-10:
+        return -1.0
+    
+    t = cross2d(vec_start_disp, other_vec) / rxs
+    s = cross2d(vec_start_disp, direction_vec) / rxs
+    
+    if 0 <= s <= 1:
+        return t.item()
+    else:
+        return -1.0

@@ -3,7 +3,7 @@ from utils.envs import MainEnv, PathEnv
 from pynput import keyboard
 
 FRAMERATE = 1500 # also equals tickrate
-SIM_LENGTH = 10000 # frames/ticks
+SIM_LENGTH = 100000 # frames/ticks
 MAX_VELO = 0.2
 x_input, y_input = 0,0
 
@@ -27,14 +27,14 @@ def main():
     
     np.set_printoptions(linewidth=200)
     
-    #env = PathEnv(framerate=FRAMERATE)
+    # env = PathEnv(framerate=FRAMERATE)
     env = MainEnv(
-        num_robots = 3, 
+        num_robots = 1, 
         width = 18, 
         height = 18, 
         target_location = None, 
         # lidar_range = 5,
-        # camera_range = 8, 
+        camera_range = 0,#8, 
         # success_range = 1,
         num_obstacles=6,        
         framerate=FRAMERATE, 
