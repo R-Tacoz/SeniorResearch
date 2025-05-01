@@ -1,10 +1,11 @@
 import numpy as np
+# from utils.envs_torch import MainEnv
 from utils.envs import MainEnv, PathEnv
 from pynput import keyboard
 
 FRAMERATE = 1500 # also equals tickrate
 SIM_LENGTH = 100000 # frames/ticks
-MAX_VELO = 0.2
+MAX_VELO = 0.025
 x_input, y_input = 0,0
 
 def on_press(key):

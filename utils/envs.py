@@ -775,7 +775,6 @@ class OpenEnv(MainEnv):
         self.obstacles = []   
 
 
-@jit(nopython=True)
 def write_edge_intersections(
     scan: np.ndarray, 
     indices_array: np.ndarray, 
@@ -785,11 +784,21 @@ def write_edge_intersections(
     edge_vec: np.ndarray, 
     edge_start: np.ndarray
 ) -> None:
-    for idx in indices_array:
-        ray_direction = lidar_ray_directions[idx]
-        dist = vector_intersection_distance(origin, ray_direction, edge_vec, edge_start)
-        if 0 <= dist <= lidar_range:
-            scan[idx] = min(scan[idx], dist)
+    """Updates a distance scan using intersection distances to a single other vector
+
+    Args:
+        scan (np.ndarray): _description_
+        indices_array (np.ndarray): _description_
+        lidar_ray_directions (np.ndarray): _description_
+        lidar_range (float): _description_
+        origin (np.ndarray): _description_
+        edge_vec (np.ndarray): _description_
+        edge_start (np.ndarray): _description_
+    """
+    
+    ray_directions = lidar_ray_directions[indices_array]
+    dists = vector_intersection_distances(origin, ray_directions, edge_vec, edge_start)
+    scan[indices_array] = np.min(np.stack((scan[indices_array],dists)), axis=0)
 
 @jit(nopython=True)
 def get_fov_mask_indices(
@@ -797,13 +806,53 @@ def get_fov_mask_indices(
     heading: float, 
     fov: float
 ) -> np.ndarray:
+    """Returns the indices of full_fov_array that would be in the FOV in the direction of heading.
+
+    Args:
+        full_fov_array (np.ndarray): _description_
+        heading (float): _description_
+        fov (float): _description_
+
+    Returns:
+        np.ndarray: _description_
+    """
     delta_angles = np.mod(full_fov_array - heading + np.pi, 2*np.pi) - np.pi
     mask = (delta_angles >= -fov/2) & (delta_angles <= fov/2)
     indices = np.where(mask)[0]
     return indices
 
+def vector_intersection_distances(
+    origin, direction_vecs, other_vec, other_vec_start
+) -> np.ndarray:
+    """Calculates the intersection distances of all vectors in direction_vecs to the other_vec
+
+    Args:
+        origin (_type_): Center of the direction vectors.
+        direction_vecs (_type_): Unit vectors in directions.
+        other_vec (_type_): A singular vector to check
+        other_vec_start (_type_): A (vector) that points to the start of the other vector in the same coordinates as origin.
+
+    Returns:
+        np.ndarray: Distances in the same length as direction_vecs. Those that don't intersect are assigned infinity.
+    """
+    vec_start_disp = other_vec_start - origin
+    rxs = np.cross(direction_vecs, other_vec) + 1e-5 # get magnitudes only
+    
+    # t*direction_vec reaches intersection
+    t = np.cross(vec_start_disp, other_vec) / rxs
+    
+    # vec_start_disp + s*other_vec reaches intersection
+    s = np.cross(vec_start_disp, direction_vecs) / rxs
+    
+    # only count intersection if it's in the edge
+    mask = (s < 0) | (s > 1)
+    
+    t[mask] = np.Infinity
+    
+    return t
+
 @jit(nopython=True, parallel=True)
-def vector_intersection_distance(
+def vector_intersection_distance_jit(
     origin: np.ndarray, 
     direction_vec: np.ndarray, 
     other_vec: np.ndarray, 
