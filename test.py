@@ -1,48 +1,38 @@
 import time
 import numpy as np
-from scipy.spatial import distance
+import torch
+device = torch.device('cuda')
+
+a = np.random.randn(300_000,3)
+b = np.random.randn(300_000,3)
+c = torch.Tensor(a)
+d = torch.Tensor(b)
 
 
-def distance_to_nearest_visited(coords, set):
-    dist = min([
-        distance.euclidean(coords, visited_coords) 
-        for visited_coords in set
-    ])
-        
-    return dist
-
-def np_dist(coords, set):
-    dist = np.min(np.linalg.norm(set - coords, axis=-1))
-    return dist
-
-
-arr = np.arange(1000)
-val = 500
-
-n = 10
-
+n = 1000
+# print(np.cross(a,b))
 start = time.perf_counter()
 for _ in range(n):
     
-    visiteds = list()
-    for i in range(300):
-        coords = (i, i+1)
-        visiteds.append(coords)
-        
-        np_dist(np.array([coords]), np.array(visiteds))
-        
-        # distance_to_nearest_visited(coords, visiteds)
+    np.cross(a,b)
             
 print(time.perf_counter() - start)
 
 start = time.perf_counter()
 for _ in range(n):
     
-    visiteds = np.empty((0,2))
-    for i in range(300):
-        coords = np.array([[i,i+1]])
-        visiteds = np.append(visiteds, coords, axis=0)
-        
-        np_dist(coords, visiteds)
+    c.cross(d, dim=1)
             
+print(time.perf_counter() - start)
+
+
+c = c.to(device)
+d = d.to(device)
+torch.cuda.synchronize
+start = time.perf_counter()
+for _ in range(n):
+    
+    c.cross(d, dim=1)
+            
+torch.cuda.synchronize()
 print(time.perf_counter() - start)

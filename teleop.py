@@ -34,7 +34,7 @@ def main():
         height = 18, 
         target_location = None, 
         # lidar_range = 5,
-        camera_range = 0,#8, 
+        camera_range = 8, 
         # success_range = 1,
         num_obstacles=6,        
         framerate=FRAMERATE, 

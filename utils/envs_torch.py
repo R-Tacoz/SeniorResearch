@@ -95,10 +95,10 @@ class MainEnv(ParallelEnv):
         self.env_box = box(0,0,self.env_width, self.env_height)
         self.env_dims = (self.env_width, self.env_height)
         self.env_boundary_vecs = [ # (p1, p2, edge_vec)
-            (np.array([0,0]), np.array([self.env_width, 0]), np.array([self.env_width, 0])),
-            (np.array([self.env_width,0]), np.array([self.env_width, self.env_height]), np.array([0, self.env_height])),
-            (np.array([self.env_width,self.env_height]), np.array([0, self.env_height]), np.array([-self.env_width, 0])),
-            (np.array([0, self.env_height]), np.array([0, 0]), np.array([0, -self.env_height])),
+            (torch.Tensor([0,0]), torch.Tensor([self.env_width, 0]), torch.Tensor([self.env_width, 0])),
+            (torch.Tensor([self.env_width,0]), torch.Tensor([self.env_width, self.env_height]), torch.Tensor([0, self.env_height])),
+            (torch.Tensor([self.env_width,self.env_height]), torch.Tensor([0, self.env_height]), torch.Tensor([-self.env_width, 0])),
+            (torch.Tensor([0, self.env_height]), torch.Tensor([0, 0]), torch.Tensor([0, -self.env_height])),
         ]
         
         # TODO: when the dust settles, we only need one obstacle data variable
@@ -134,11 +134,11 @@ class MainEnv(ParallelEnv):
             shape=(2,), dtype=np.float32
             )
         
-        self.lidar_ray_indices = np.arange(self.lidar_ray_count)
-        self.lidar_angles = np.linspace(-np.pi, np.pi, self.lidar_ray_count)
-        self.lidar_ray_directions = np.stack((np.cos(self.lidar_angles), np.sin(self.lidar_angles)), axis=-1)
+        self.lidar_ray_indices = torch.arange(self.lidar_ray_count)
+        self.lidar_angles = torch.linspace(-torch.pi, torch.pi, self.lidar_ray_count)
+        self.lidar_ray_directions = torch.stack((torch.cos(self.lidar_angles), torch.sin(self.lidar_angles)), axis=-1)
         self.lidar_ray_displacements = self.lidar_ray_directions * self.lidar_range
-        self.lidar_scan_buffer: np.ndarray = np.zeros(self.lidar_ray_count, dtype=np.float64)
+        self.lidar_scan_buffer: np.ndarray = torch.zeros(self.lidar_ray_count, dtype=torch.float64)
         
         self.ticks_elapsed = 0
         self.framerate = framerate
@@ -198,7 +198,7 @@ class MainEnv(ParallelEnv):
                     break
                 
         # re-randomize agent positions and initialize the visited set
-        corners_template = np.array([
+        corners_template = torch.Tensor([
             [-self.robot_width/2, -self.robot_height/2],
             [self.robot_width/2, -self.robot_height/2],
             [self.robot_width/2, self.robot_height/2],
@@ -206,7 +206,7 @@ class MainEnv(ParallelEnv):
         ])
                   
         self.robot_positions = {}
-        self.sparse_visited_coords = np.empty((0,2))
+        self.sparse_visited_coords = torch.empty((0,2))
         for agent_id in self.possible_agents:
             coords = None
             while True:
@@ -214,15 +214,18 @@ class MainEnv(ParallelEnv):
                 if not self.is_collision(coords): 
                     break
                 
-            point = np.array(coords)
+            point = torch.Tensor(coords)
             self.robot_positions[agent_id] = coords
             self.robot_box_centers[agent_id] = point
             self.robot_box_corners[agent_id] = point + corners_template
             
-            self.sparse_visited_coords = np.append(self.sparse_visited_coords, [point], axis=0)
+            self.sparse_visited_coords = torch.concat(
+                (self.sparse_visited_coords, point.reshape(1,-1)), 
+                axis=0)
+            # self.sparse_visited_coords = np.append(self.sparse_visited_coords, [point], axis=0)
             self.robot_last_velocities[agent_id] = (0,0)
 
-        self.robot_box_edge_vectors = np.array([
+        self.robot_box_edge_vectors = torch.Tensor([
             [self.robot_width, 0],
             [0, self.robot_height],
             [-self.robot_width, 0],
@@ -266,7 +269,7 @@ class MainEnv(ParallelEnv):
             
             t0 = time.perf_counter()
             # read action and current state
-            action = np.array(action).flatten()
+            action = torch.Tensor(action).flatten()
             dx, dy = action
             ds = action
 
@@ -276,7 +279,7 @@ class MainEnv(ParallelEnv):
             new_x = np.clip(x + dx, 0.01, self.env_width-0.01)
             new_y = np.clip(y + dy, 0.01, self.env_height-0.01)
             new_coords: coords_t = (new_x, new_y)
-            new_coords_a = np.array(new_coords)
+            new_coords_a = torch.Tensor(new_coords)
             
             move_time += (t1:=time.perf_counter()) - t0
 
@@ -304,10 +307,13 @@ class MainEnv(ParallelEnv):
                 # update visited points
                 dist_to_closest_visited = self.distance_to_nearest_visited(new_coords_a)
                 if dist_to_closest_visited > self.visiteds_min_dist:
-                    self.sparse_visited_coords = np.append(self.sparse_visited_coords, [new_coords_a], axis=0)
+                    self.sparse_visited_coords = torch.concat(
+                        (self.sparse_visited_coords, new_coords_a.reshape(1,-1)),
+                        axis=0)
+                    # self.sparse_visited_coords = np.append(self.sparse_visited_coords, [new_coords_a], axis=0)
                     
             else:
-                dist_to_closest_visited = self.distance_to_nearest_visited(np.array([x, y]))
+                dist_to_closest_visited = self.distance_to_nearest_visited(torch.Tensor([x, y]))
             visiteds_time += (t0:=time.perf_counter()) - t1
                      
             # get observations     
@@ -359,7 +365,7 @@ class MainEnv(ParallelEnv):
         t0 = time.perf_counter() * 1000
         
         # Camera detection
-        camera_detection = np.array([1, 0]) # default if no detection is camera range (normalized), zero heading
+        camera_detection = torch.Tensor([1, 0]) # default if no detection is camera range (normalized), zero heading
         target_dist = distance.euclidean(coords, self.target_location)
         in_sight = False
         if target_dist < self.camera_range:
@@ -380,7 +386,7 @@ class MainEnv(ParallelEnv):
                 camera_detection[1] = target_heading / math.pi
                 
         # Kinematic information
-        last_velocity = np.array(self.robot_last_velocities[agent_id])
+        last_velocity = torch.Tensor(self.robot_last_velocities[agent_id])
         
         t2 = time.perf_counter() * 1000
         
@@ -390,7 +396,8 @@ class MainEnv(ParallelEnv):
         # TODO: maybe displacement vector to average of the visiteds
                  
         data = [target_dist, in_sight] # extra data for reward calculation 
-        observations = np.concatenate([lidar_scan, camera_detection, last_velocity], axis=0)
+        observations = torch.concat((lidar_scan, camera_detection, last_velocity), dim=0)
+        # observations = np.concatenate([lidar_scan, camera_detection, last_velocity], axis=0)
         return observations, data
 
     def get_random_coord(self, in_grid=True) -> tuple:
@@ -403,15 +410,16 @@ class MainEnv(ParallelEnv):
 
     # @jit(nopython=True)
     def fast_ray_cast(self, origin, agent_id=None) -> np.ndarray:
-        origin = np.array(origin)
+        origin = torch.Tensor(origin)
         scan = self.lidar_scan_buffer
         scan.fill(self.lidar_range)
         
         # obstacles
         obstacle_displacements = self.obstacle_centers - origin
-        obstacle_distances = np.linalg.norm(obstacle_displacements, axis=1) # broadcasts
+        obstacle_distances: torch.Tensor = torch.linalg.vector_norm(obstacle_displacements, dim=1)
+        # obstacle_distances = np.linalg.norm(obstacle_displacements, axis=1) # broadcasts
         obstacle_distances -= self.approx_obs_radius # can be converted to an array
-        close_obstacle_center_indices = (obstacle_distances <= self.lidar_range).nonzero()[0]
+        close_obstacle_center_indices = (obstacle_distances <= self.lidar_range).nonzero(as_tuple=True)[0]
         
         t0 = time.perf_counter() * 1000
         for idx in close_obstacle_center_indices:     
@@ -446,7 +454,8 @@ class MainEnv(ParallelEnv):
                 continue
             
             displacement_to_other = self.robot_box_centers[id_] - origin
-            dist_to_other_center = np.linalg.norm(displacement_to_other)
+            dist_to_other_center = torch.linalg.vector_norm(displacement_to_other)
+            # dist_to_other_center = np.linalg.norm(displacement_to_other)
             if dist_to_other_center - self.approx_robot_box_radius > self.lidar_range:
                 continue
             
@@ -500,7 +509,8 @@ class MainEnv(ParallelEnv):
         return False
     
     def distance_to_nearest_visited(self, coords) -> float:
-        dist = np.min(np.linalg.norm(self.sparse_visited_coords - coords, axis=-1))
+        dist = torch.min(torch.linalg.vector_norm(self.sparse_visited_coords - coords), dim=-1)
+        # dist = np.min(np.linalg.norm(self.sparse_visited_coords - coords, axis=-1))
         
         return dist
     
@@ -579,7 +589,7 @@ class MainEnv(ParallelEnv):
                 self.obstacle_coords_points.append((x,y,maxx,maxy))
                 self.obstacles.append(box(x,y,maxx,maxy)) 
                 
-        self.obstacle_centers = np.array(tl_corners) + np.array([self.obstacle_width/2, self.obstacle_height/2])  # shape (num_obstacles, 2)
+        self.obstacle_centers = torch.Tensor(tl_corners) + torch.Tensor([self.obstacle_width/2, self.obstacle_height/2])  # shape (num_obstacles, 2)
             
         for minx, miny, maxx, maxy in self.obstacle_coords_points: 
             edges = [
@@ -590,7 +600,7 @@ class MainEnv(ParallelEnv):
             ]
             edge_lord_gooner = []
             for p1, p2 in edges:
-                p1, p2 = np.array(p1), np.array(p2)
+                p1, p2 = torch.Tensor(p1), torch.Tensor(p2)
                 edge_vector = p2 - p1
                 edge_lord_gooner.append((p1, p2, edge_vector))
                 
@@ -695,8 +705,10 @@ class MainEnv(ParallelEnv):
         # Draw LiDAR points
         if self.num_agents <= 2:
             origin = self.robot_positions['robot_0']
-            scan = np.repeat(self.lidar_scan_buffer.reshape(-1,1), 2, axis=1)
-            for coord in np.multiply(self.lidar_ray_displacements, scan):
+            # scan = np.repeat(self.lidar_scan_buffer.reshape(-1,1), 2, axis=1)
+            scan = torch.repeat_interleave(self.lidar_scan_buffer.reshape(-1,1), 2, dim=1)
+            torch.mul
+            for coord in torch.mul(self.lidar_ray_displacements, scan):
                 coord[0] += origin[0]
                 coord[1] += origin[1]
                 pygame.draw.circle(
@@ -746,12 +758,13 @@ class PathEnv(MainEnv):
         self.agents = self.possible_agents[:]
 
         self.robot_positions = {f"robot_{i}": tuple([0, 3.5]) for i in range(self.num_robots)}
-        self.sparse_visited_coords = np.empty((0,2))
+        self.sparse_visited_coords = torch.empty((0,2))
         
         for agent_id in self.robot_positions:
             point = self.robot_positions[agent_id]
             self.robot_box_centers[agent_id] = point
-            self.sparse_visited_coords = np.append(self.sparse_visited_coords, [point], axis=0)             
+            self.sparse_visited_coords = torch.concat(self.sparse_visited_coords, point.reshape(1,-1), dim=0)
+            # self.sparse_visited_coords = np.append(self.sparse_visited_coords, [point], axis=0)             
             self.robot_last_velocities[agent_id] = (0,0)
         
         obstacle_coords = [
@@ -797,29 +810,42 @@ def get_fov_mask_indices(
     heading: float, 
     fov: float
 ) -> np.ndarray:
-    delta_angles = np.mod(full_fov_array - heading + np.pi, 2*np.pi) - np.pi
-    mask = (delta_angles >= -fov/2) & (delta_angles <= fov/2)
-    indices = np.where(mask)[0]
+    delta_angles = torch.remainder(full_fov_array - heading + np.pi, 2*np.pi) - np.pi
+    # delta_angles = np.mod(full_fov_array - heading + np.pi, 2*np.pi) - np.pi
+    mask: torch.Tensor = (delta_angles >= -fov/2) & (delta_angles <= fov/2)
+    indices = mask.nonzero()
+    # indices = torch.nonwhere(mask)[0]
     return indices
 
-@jit(nopython=True, parallel=True)
 def vector_intersection_distance(
-    origin: np.ndarray, 
-    direction_vec: np.ndarray, 
-    other_vec: np.ndarray, 
-    other_vec_start: np.ndarray
+    origin: torch.Tensor,
+    direction_vec: torch.Tensor,
+    other_vec: torch.Tensor,
+    other_vec_start: torch.Tensor,
 ) -> float:
     vec_start_disp = other_vec_start - origin
-    # rxs = np.cross(direction_vec, other_vec)
-    rxs = cross2d(direction_vec, other_vec)
+    rxs = direction_vec.cross(other_vec)
     
-    if abs(rxs.item()) < 1e-10:
-        return -1.0
     
-    t = cross2d(vec_start_disp, other_vec) / rxs
-    s = cross2d(vec_start_disp, direction_vec) / rxs
+
+# @jit(nopython=True, parallel=True)
+# def vector_intersection_distance(
+#     origin: np.ndarray, 
+#     direction_vec: np.ndarray, 
+#     other_vec: np.ndarray, 
+#     other_vec_start: np.ndarray
+# ) -> float:
+#     vec_start_disp = other_vec_start - origin
+#     # rxs = np.cross(direction_vec, other_vec)
+#     rxs = cross2d(direction_vec, other_vec)
     
-    if 0 <= s <= 1:
-        return t.item()
-    else:
-        return -1.0
+#     if abs(rxs.item()) < 1e-10:
+#         return -1.0
+    
+#     t = cross2d(vec_start_disp, other_vec) / rxs
+#     s = cross2d(vec_start_disp, direction_vec) / rxs
+    
+#     if 0 <= s <= 1:
+#         return t.item()
+#     else:
+#         return -1.0
