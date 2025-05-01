@@ -49,7 +49,57 @@ class RewardTrackerCallback(BaseCallback):
             self.episode_rewards.append(mean_reward)
         else:
             print("Warning: 'rewards' not found in self.locals")
+            
+class EnvGNN(torch.nn.Module):
+    def __init__(self, in_channels, hidden_channels, out_channels):
+        super().__init__()
+        self.conv1 = GCNConv(in_channels, hidden_channels)
+        self.conv2 = GCNConv(hidden_channels, out_channels)
 
+    def forward(self, data):
+        x, edge_index = data.x, data.edge_index
+        x = F.relu(self.conv1(x, edge_index))
+        x = F.relu(self.conv2(x, edge_index))
+
+        # get global graph embedding
+        global_emb = global_mean_pool(x, torch.zeros(x.size(0), dtype=torch.long, device=x.device))
+        return global_emb
+
+from stable_baselines3.common.policies import ActorCriticPolicy
+
+class GNNPolicy(ActorCriticPolicy):
+    def __init__(self, observation_space, action_space, lr_schedule, net_arch=None, **kwargs):
+        super().__init__(observation_space, action_space, lr_schedule, **kwargs)
+
+        # local observation encoder
+        self.local_obs_net = nn.Sequential(
+            nn.Linear(observation_space.shape[0], 64),
+            nn.ReLU(),
+            nn.Linear(64, 32),
+            nn.ReLU(),
+        )
+
+        # GNN module
+        self.env_gnn = EnvGNN(in_channels=4, hidden_channels=32, out_channels=32)
+
+        # final policy + value heads
+        combined_input_size = 32 + 32
+        self.policy_net = nn.Linear(combined_input_size, self.action_dist.proba_distribution.mean_actions.shape[0])
+        self.value_net = nn.Linear(combined_input_size, 1)
+
+    def forward(self, obs, graph_data):
+        local_feat = self.local_obs_net(obs)
+        global_feat = self.env_gnn(graph_data)
+
+        combined = torch.cat([local_feat, global_feat], dim=-1)
+        return combined
+
+    def _predict(self, obs, graph_data):
+        combined = self.forward(obs, graph_data)
+        actions = self.policy_net(combined)
+        values = self.value_net(combined)
+        return actions, values
+        
 SAVE_DIR = "saved_runs/run1"
 
 def main():
