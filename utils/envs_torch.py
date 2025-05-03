@@ -739,6 +739,53 @@ class MainEnv(ParallelEnv):
         if self.screen is not None:
             pygame.quit()
             self.screen = None
+
+    def make_graph_env(self):
+        node_features = []
+        edge_index = []
+        edge_attr = []
+
+        agent_ids = list(self.robot_positions.keys())
+
+        for agent_id in agent_ids:
+            pos = np.array(self.robot_positions[agent_id])
+            vel = np.array(self.robot_last_velocities[agent_id])
+            feature = np.concatenate([pos, vel, 0]) # 0 for robot
+            node_features.append(feature)
+
+        for obs in self.obstacles:
+            pos = np.array(obs.centroid.coords[0])
+            feature = np.concatenate([pos, [0, 0], 1]) # 1 for obstacle
+            node_features.append(feature)
+
+        num_nodes = len(node_features)
+
+        # Build edges (fully connected or proximity-based)
+        for i in range(num_nodes):
+            for j in range(num_nodes):
+                if i == j:
+                    continue
+                pos_i = node_features[i][:2]
+                pos_j = node_features[j][:2]
+                dist = np.linalg.norm(pos_i - pos_j)
+
+                los = 1.0
+                sightline = LineString([pos_i, pos_j])
+                for obs in self.obstacles:
+                    if sightline.intersects(obs):
+                        los = 0.0
+                        break
+
+                edge_index.append([i, j])
+                edge_attr.append([dist, los])
+
+        x = torch.tensor(node_features, dtype=torch.float)
+        edge_index = torch.tensor(edge_index, dtype=torch.long).t().contiguous()
+        edge_attr = torch.tensor(edge_attr, dtype=torch.float)
+
+        graph_data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr)
+
+        return graph_data
             
 class PathEnv(MainEnv):
     def __init__(self, framerate=5):
