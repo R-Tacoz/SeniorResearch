@@ -6,35 +6,38 @@ import matplotlib.pyplot as plt
 from stable_baselines3 import PPO
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.callbacks import BaseCallback
+
+
 from stable_baselines3.common.env_checker import check_env
 from stable_baselines3.common.policies import ActorCriticCnnPolicy, ActorCriticPolicy, BasePolicy, MultiInputActorCriticPolicy
 from pettingzoo.utils import parallel_to_aec
 from pettingzoo.test import parallel_api_test
 from utils.envs import MainEnv
-# from pynput import keyboard
+from pynput import keyboard
 
 FRAMERATE = 16 # also equals tickrate
 SIM_LENGTH = 100000 # frames/ticks
 MAX_VELO = 4 # cells / s
 MAX_DISP = 2
 N_ROBOTS = 3
-x_input, y_input = 0,0
-# def on_press(key):
-#     global x_input, y_input
-#     if key == keyboard.Key.up:      y_input = -1
-#     elif key == keyboard.Key.down:  y_input = 1
-#     elif key == keyboard.Key.right: x_input = 1
-#     elif key == keyboard.Key.left:  x_input = -1
 
-# def on_release(key):
-#     global x_input, y_input
-#     if key == keyboard.Key.up:      y_input = 0
-#     elif key == keyboard.Key.down:  y_input = 0
-#     elif key == keyboard.Key.right: x_input = 0
-#     elif key == keyboard.Key.left:  x_input = 0
+end_sim = False
+reset_sim = False
 
+def on_press(key):
+    global end_sim, reset_sim
+    if isinstance(key, keyboard.KeyCode):
+        if key.char == 'q':
+            end_sim = True    
+        elif key.char == 'r':
+            reset_sim = True
+        
 def main():
-    load_dir = "saved_runs/run3"
+    global reset_sim
+    listener = keyboard.Listener(on_press)
+    listener.start()
+    
+    load_dir = "saved_runs/run6/ppo_agent/ppo_model_1440000_steps"
     
     # Testing environment
     parallel_env = MainEnv(
@@ -80,8 +83,14 @@ def main():
         pygame.time.delay(100)
         
         # Check if the original environment is still active
-        if not parallel_env.active:# or any(terms.values()):
+        if end_sim: #not parallel_env.active:# or any(terms.values()):
             break
+        elif reset_sim:
+            obs = env.reset()
+            parallel_env.reset()
+            reset_sim = False
+            
+    env.close()
 
 
 if __name__=="__main__":

@@ -19,7 +19,7 @@ from utils.agents import RandomAgent, MLPAgent, ConvAgent
 # TODO: eventually move all coords_t usages to np.ndarray
 coords_t = tuple[float, float]
 id_t = str
-EPS_REWARD = 1e-2 # for division by distance in reward
+EPS_REWARD = 5e-2 # for division by distance in reward
 EPS_LIDAR = 1e-8
 BOUNDS_PAD = 1e-2
 LIDAR_RAY_COUNT = 90
@@ -148,7 +148,10 @@ class MainEnv(ParallelEnv):
         self.lidar_angles = np.linspace(-np.pi, np.pi, self.lidar_ray_count)
         self.lidar_ray_directions = np.stack((np.cos(self.lidar_angles), np.sin(self.lidar_angles)), axis=-1)
         self.lidar_ray_displacements = self.lidar_ray_directions * self.lidar_range
-        self.lidar_scan_buffer: np.ndarray = np.zeros(self.lidar_ray_count, dtype=np.float64)
+        self.lidar_scan_buffers: dict[id_t, np.ndarray] = {
+            id_: np.zeros(self.lidar_ray_count, dtype=np.float64)
+            for id_ in self.agents
+        }
         
         self.robot_target_sightlines: dict[id_t, np.ndarray | None] = {}
         
@@ -288,7 +291,8 @@ class MainEnv(ParallelEnv):
             # read action and current state
             action = np.array(action).flatten()
             dx, dy = action
-            ds = action
+            ds = action # = velocity
+            dist_moved = np.linalg.norm(ds)
 
             s0 = self.robot_positions[agent_id]
             x, y = s0
@@ -350,7 +354,8 @@ class MainEnv(ParallelEnv):
             # calculate reward
             rewards[agent_id] = self.calc_reward(
                 agent_id, new_s, attempted_collision, target_dist, 
-                target_in_sight, dist_to_closest_visited, acceleration)
+                target_in_sight, dist_to_closest_visited, acceleration, 
+                dist_moved)
             
             reward_time += (t0:=time.perf_counter()) - t1
       
@@ -449,7 +454,7 @@ class MainEnv(ParallelEnv):
     # @jit(nopython=True)
     def fast_ray_cast(self, origin, agent_id=None) -> np.ndarray:
         origin = np.array(origin)
-        scan = self.lidar_scan_buffer
+        scan = self.lidar_scan_buffers[agent_id]
         scan.fill(self.lidar_range)
         
         # obstacles
@@ -577,23 +582,28 @@ class MainEnv(ParallelEnv):
         target_in_sight: bool,
         nearest_visited_dist: float,
         acceleration: float,
+        dist_moved: float,
     ) -> float:
         
         reward = 0.0
         
         # time penalty
-        reward += -0.01
+        reward += -0.005
+        
+        # velocity reward
+        if dist_moved > 0.1:
+            reward += 1.0
         
         # acceleration penalty
-        reward += -0.1 * acceleration
+        reward += -0.05 * acceleration
         
         # collision penalty
         if attempted_collision:
-            reward += -1.0
+            reward += -0.3
         
         # exploration reward
         if nearest_visited_dist > self.visiteds_min_dist:
-            reward += 0.5
+            reward += 1.5
             
         # TODO: maybe reward distance to average of visited points? rn only looks at nearest
         
@@ -602,12 +612,12 @@ class MainEnv(ParallelEnv):
         
         # target sight reward
         if target_in_sight:
-            reward += 2.0
+            reward += 3.0
             reward += 0.1/(target_dist + EPS_REWARD)
             
         # success reward
         if target_dist < self.success_range:
-            reward += 10.0
+            reward += 15.0
             
         return reward
   
@@ -770,17 +780,21 @@ class MainEnv(ParallelEnv):
             )
             
         # Draw LiDAR points
-        origin = self.robot_positions[f"robot_{self.num_robots-1}"]
-        scan = np.repeat(self.lidar_scan_buffer.reshape(-1,1), 2, axis=1)
-        for coord in np.multiply(self.lidar_ray_displacements, scan):
-            coord[0] += origin[0]
-            coord[1] += origin[1]
-            pygame.draw.circle(
-                self.screen,
-                self.colors['lidar_point'],
-                (coord[0] * self.cell_size, coord[1] * self.cell_size),
-                3,
-            )
+        for id_, scan in self.lidar_scan_buffers.items():
+            origin = self.robot_positions[id_]
+            scan = np.repeat(scan.reshape(-1,1), 2, axis=1)
+            
+            # origin = self.robot_positions[f"robot_{self.num_robots-1}"]
+            # scan = np.repeat(self.lidar_scan_buffer.reshape(-1,1), 2, axis=1)
+            for coord in np.multiply(self.lidar_ray_displacements, scan):
+                coord[0] += origin[0]
+                coord[1] += origin[1]
+                pygame.draw.circle(
+                    self.screen,
+                    self.colors['lidar_point'],
+                    (coord[0] * self.cell_size, coord[1] * self.cell_size),
+                    3,
+                )
             
         pygame.display.flip()  # Update the screen
         self.clock.tick(self.framerate)  # Limit framerate

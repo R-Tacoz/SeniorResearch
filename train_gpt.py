@@ -11,14 +11,15 @@ import os
 
 # === Hyperparameters ===
 NUM_ENVS = 4  # Tune based on CPU
-TOTAL_TIMESTEPS = 10_000_000
-STEPS_PER_CHECKPOINT = 10_000 * NUM_ENVS
-SAVE_ROOT = "./saved_runs/run5"
+TOTAL_TIMESTEPS = 2_000_000
+STEPS_PER_CHECKPOINT = 1_000 * NUM_ENVS
+SAVE_ROOT = "./saved_runs/run6"
 SAVE_PATH = SAVE_ROOT + "/ppo_agent"
 TENSORBOARD_LOG = SAVE_ROOT + "/ppo_run"
 
 
 def main():
+    
     
     env = MainEnv(
         num_robots=3, 
@@ -47,7 +48,7 @@ def main():
     model = PPO(
         policy="MlpPolicy",
         env=env,
-        learning_rate=1e-4,
+        learning_rate=3e-4,
         n_steps=2048,
         batch_size=64,
         n_epochs=10,
@@ -73,7 +74,8 @@ def main():
     model.learn(
         total_timesteps=TOTAL_TIMESTEPS,
         callback=checkpoint_callback,
-        progress_bar=True
+        progress_bar=True,
+        tb_log_name=TENSORBOARD_LOG
     )
 
     print("Training complete. Saving...", end=" ")

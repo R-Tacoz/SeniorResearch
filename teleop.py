@@ -31,7 +31,7 @@ def main():
     np.set_printoptions(linewidth=200)
     
     # env = PathEnv(framerate=FRAMERATE)
-    n_robots = 1
+    n_robots = 2
     env = MainEnv(
         num_robots = n_robots, 
         width = 18, 

@@ -90,7 +90,6 @@ class EnvGNN(torch.nn.Module):
         global_emb = global_mean_pool(x, torch.zeros(x.size(0), dtype=torch.long, device=x.device))
         return global_emb
 
-from stable_baselines3.common.policies import ActorCriticPolicy
 
 class GNNPolicy(ActorCriticPolicy):
     def __init__(self, observation_space, action_space, lr_schedule, net_arch=None, **kwargs):
