@@ -16,6 +16,10 @@ from shapely import Geometry
 from scipy.spatial import distance, KDTree
 from utils.agents import RandomAgent, MLPAgent, ConvAgent
 
+# This is to test the speed when converting numpy to pytorch because in a test
+# i ran earlier torch.Tensor operations are faster, so idk why its slower. Still
+# has potential optimizations
+
 # TODO: eventually move all coords_t usages to np.ndarray
 coords_t = tuple[float, float]
 id_t = str
@@ -54,22 +58,6 @@ class MainEnv(ParallelEnv):
         framerate: int = 10,
         options: object = None,
     ):
-        """init
-
-        Args:
-            num_robots (int, optional): _description_. Defaults to 3.
-            width (int, optional): _description_. Defaults to 20.
-            height (int, optional): _description_. Defaults to 20.
-            target_location (tuple | None, optional): _description_. Defaults to (8, 8).
-            lidar_range (float, optional): _description_. Defaults to 2.
-            camera_range (float, optional): _description_. Defaults to 2.
-            success_range (float, optional): _description_. Defaults to 1.
-            render_mode (str | None, optional): _description_. Defaults to None.
-            seed (object, optional): _description_. Defaults to None.
-            num_obstacles (int, optional): _description_. Defaults to 6.
-            framerate (int, optional): _description_. Defaults to 10.
-            options (object, optional): _description_. Defaults to None.
-        """
         super().__init__()
         
         # init params

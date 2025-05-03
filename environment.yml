@@ -16,5 +16,7 @@ dependencies:
   - pytorch-cuda=12.4
   - scipy=1.15.2
   - stable-baselines3=2.6.0
+  - tensorboard
+  - tqdm
   - pip:
       - supersuit==3.9.3

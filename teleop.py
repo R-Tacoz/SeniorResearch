@@ -1,11 +1,13 @@
+import time
 import numpy as np
 # from utils.envs_torch import MainEnv
 from utils.envs import MainEnv, PathEnv
 from pynput import keyboard
 
-FRAMERATE = 1500 # also equals tickrate
+FRAMERATE = 320 # also equals tickrate
 SIM_LENGTH = 100000 # frames/ticks
-MAX_VELO = 0.025
+MAX_VELO = 4 # cells / s
+MAX_DISP = 2
 x_input, y_input = 0,0
 
 def on_press(key):
@@ -29,26 +31,36 @@ def main():
     np.set_printoptions(linewidth=200)
     
     # env = PathEnv(framerate=FRAMERATE)
+    n_robots = 1
     env = MainEnv(
-        num_robots = 1, 
+        num_robots = n_robots, 
         width = 18, 
         height = 18, 
         target_location = None, 
         # lidar_range = 5,
         camera_range = 8, 
         # success_range = 1,
-        num_obstacles=6,        
+        num_obstacles=8,        
         framerate=FRAMERATE, 
         render_mode='human'
     )
     
-
+    t0 = time.perf_counter()
     for _ in range(SIM_LENGTH):
+        dt = time.perf_counter() - t0
+        t0 += dt
+        
         velo_command = np.array([x_input, y_input], dtype=np.float64)
         if (x_input | y_input) != 0:
-            velo_command /= np.linalg.norm(velo_command) / MAX_VELO # normalize magnitude
+            velo_command /= np.linalg.norm(velo_command) / (MAX_VELO*dt) # normalize magnitude
         
-        actions = {robot: velo_command if i == 0 else np.zeros((2,), dtype=np.float64) for i,robot in enumerate(env.agents)}
+        np.clip(velo_command, -MAX_DISP, MAX_DISP, out=velo_command)
+        
+        actions = {
+            robot: velo_command 
+            if i == n_robots-1 else np.zeros((2,), dtype=np.float64) 
+            for i,robot in enumerate(env.agents)
+        }
         obs, rewards, terms, truncs, info = env.step(actions)
         
         # print(f"{obs['robot_0']} | {rewards['robot_0']}", end='\r')
