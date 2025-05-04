@@ -6,14 +6,17 @@ import matplotlib.pyplot as plt
 from stable_baselines3 import PPO
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.callbacks import BaseCallback
-
-
+from stable_baselines3.common.vec_env import VecNormalize, VecMonitor
 from stable_baselines3.common.env_checker import check_env
 from stable_baselines3.common.policies import ActorCriticCnnPolicy, ActorCriticPolicy, BasePolicy, MultiInputActorCriticPolicy
 from pettingzoo.utils import parallel_to_aec
 from pettingzoo.test import parallel_api_test
-from utils.envs import MainEnv
+from utils.envs import MainEnv, SinglePettingZooVecEnv
 from pynput import keyboard
+
+LOAD_ROOT = "./saved_runs/run1"
+MODEL_PATH = LOAD_ROOT + "/ppo_agent/final_model"
+ENV_PATH = LOAD_ROOT + "/envs/vecnorm1.pkl"
 
 FRAMERATE = 16 # also equals tickrate
 SIM_LENGTH = 100000 # frames/ticks
@@ -37,7 +40,6 @@ def main():
     listener = keyboard.Listener(on_press)
     listener.start()
     
-    load_dir = "saved_runs/run6/ppo_agent/ppo_model_1440000_steps"
     
     # Testing environment
     parallel_env = MainEnv(
@@ -54,17 +56,23 @@ def main():
         )
 
     # Wrap the environment for compatibility with Stable-Baselines3
-    env = ss.pettingzoo_env_to_vec_env_v1(parallel_env)
-    env = ss.concat_vec_envs_v1(env, num_vec_envs=1, base_class="stable_baselines3")
+    vec_env = SinglePettingZooVecEnv(parallel_env)
+    # env = ss.pettingzoo_env_to_vec_env_v1(parallel_env)
+    # env = ss.concat_vec_envs_v1(env, num_vec_envs=1, base_class="stable_baselines3")
+    try:
+        vec_env = VecNormalize.load(ENV_PATH, vec_env)
+    except FileNotFoundError:
+        print("WARNING: No VecNormalize file found. Running without it. ")
+        
 
     # Load and test the trained model
-    model = PPO.load(load_dir, device='cpu')
+    model = PPO.load(MODEL_PATH, device='cpu')
     #print(env.reset())
-    obs = env.reset()
+    obs = vec_env.reset()
 
     for _ in range(5000):
         actions, _ = model.predict(obs)
-        obs, rewards, terms, truncs = env.step(actions)
+        obs, rewards, terms, truncs = vec_env.step(actions)
         
         # Update the original environment with the same actions
         # Convert actions from the wrapped format back to the PettingZoo format
@@ -83,14 +91,13 @@ def main():
         pygame.time.delay(100)
         
         # Check if the original environment is still active
-        if end_sim: #not parallel_env.active:# or any(terms.values()):
+        if end_sim or not parallel_env.active: #not parallel_env.active:# or any(terms.values()):
             break
         elif reset_sim:
-            obs = env.reset()
-            parallel_env.reset()
+            obs = vec_env.reset()
             reset_sim = False
             
-    env.close()
+    vec_env.close()
 
 
 if __name__=="__main__":

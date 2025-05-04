@@ -11,9 +11,9 @@ import os
 
 # === Hyperparameters ===
 NUM_ENVS = 4  # Tune based on CPU
-TOTAL_TIMESTEPS = 2_000_000
+TOTAL_TIMESTEPS = 4_000_000
 STEPS_PER_CHECKPOINT = 1_000 * NUM_ENVS
-SAVE_ROOT = "./saved_runs/run6"
+SAVE_ROOT = "./saved_runs/run1"
 SAVE_PATH = SAVE_ROOT + "/ppo_agent"
 TENSORBOARD_LOG = SAVE_ROOT + "/ppo_run"
 
@@ -81,7 +81,13 @@ def main():
     print("Training complete. Saving...", end=" ")
     # === Save Final Model and Normalization Stats ===
     model.save(os.path.join(SAVE_PATH, "final_model"))
-    env.save(os.path.join(SAVE_PATH, "vecnormalize.pkl"))
+    
+    if isinstance(env.unwrapped, VecNormalize):
+        env.get_attr("venv")[0].save(os.path.join(SAVE_ROOT, "/envs/vecnorm1.pkl"))
+    elif isinstance(env.unwrapped, VecNormalize):
+        env.unwrapped.save(os.path.join(SAVE_ROOT, "/envs/vecnorm1.pkl"))
+
+    # env.save(os.path.join(SAVE_PATH, "vecnormalize.pkl"))
     
     print("Done.")
 

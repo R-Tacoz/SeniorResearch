@@ -9,13 +9,16 @@ SIM_LENGTH = 100000 # frames/ticks
 MAX_VELO = 4 # cells / s
 MAX_DISP = 2
 x_input, y_input = 0,0
+reset_sim = False
 
 def on_press(key):
-    global x_input, y_input
+    global x_input, y_input, reset_sim
     if key == keyboard.Key.up:      y_input = -1
     elif key == keyboard.Key.down:  y_input = 1
     elif key == keyboard.Key.right: x_input = 1
     elif key == keyboard.Key.left:  x_input = -1
+    elif isinstance(key, keyboard.KeyCode):
+            if key.char == 'r': reset_sim = True
 
 def on_release(key):
     global x_input, y_input
@@ -25,6 +28,7 @@ def on_release(key):
     elif key == keyboard.Key.left:  x_input = 0
 
 def main():
+    global reset_sim
     listener = keyboard.Listener(on_press, on_release)
     listener.start()
     
@@ -66,8 +70,12 @@ def main():
         # print(f"{obs['robot_0']} | {rewards['robot_0']}", end='\r')
         #print(f"{env.robot_positions['robot_0'][0]:.2f}, {env.robot_positions['robot_0'][1]:.2f}", end='\r')
         env.render()
+        
+        if reset_sim:
+            obs = env.reset()
+            reset_sim = False
 
-        if any(terms.values()) or not env.active:
+        if not env.active:
             break
 
     env.close()

@@ -11,6 +11,7 @@ from stable_baselines3.common.policies import ActorCriticCnnPolicy, ActorCriticP
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 import torch
 from torch import nn
+from torch_geometric.nn import GCNConv
 
 class RandomAgent():
     def __init__(self):
@@ -57,4 +58,12 @@ class ConvAgent(ActorCriticCnnPolicy):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
     
+class GNNPolicy(ActorCriticCnnPolicy):
     
+    def __init__(self, *args, **kwargs):
+        self.gcn1 = GCNConv()
+    
+class GNNFeatureExtractor(BaseFeaturesExtractor):
+    
+    def __init__(self, *args, **kwargs):
+        pass

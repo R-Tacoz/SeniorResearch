@@ -14,6 +14,7 @@ dependencies:
   - python=3.10
   - pytorch=2.5.1
   - pytorch-cuda=12.4
+  - pytorch_geometric
   - scipy=1.15.2
   - stable-baselines3=2.6.0
   - tensorboard

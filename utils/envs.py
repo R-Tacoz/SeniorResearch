@@ -8,6 +8,7 @@ import torch
 import pygame
 import functools
 from pettingzoo.utils.env import ParallelEnv
+from stable_baselines3.common.vec_env import VecEnv
 from gymnasium.spaces import Box, Discrete
 # TODO: atp idt we need shapely stuff anymore. we can clean it out of code when everything works
 import shapely
@@ -19,7 +20,7 @@ from utils.agents import RandomAgent, MLPAgent, ConvAgent
 # TODO: eventually move all coords_t usages to np.ndarray
 coords_t = tuple[float, float]
 id_t = str
-EPS_REWARD = 5e-2 # for division by distance in reward
+EPS_REWARD = 1.25 # for division by distance in reward = 0.8 is max weight
 EPS_LIDAR = 1e-8
 BOUNDS_PAD = 1e-2
 LIDAR_RAY_COUNT = 90
@@ -139,6 +140,8 @@ class MainEnv(ParallelEnv):
             shape=(self.lidar_ray_count + 2 + 2,), # + camera detection + last velocity
             dtype=np.float32
             )
+        
+        self.robot_max_velocity = 1.0
         self.robot_action_space = Box(
             low=-1.0, high=1.0, 
             shape=(2,), dtype=np.float32
@@ -269,6 +272,8 @@ class MainEnv(ParallelEnv):
         Returns:
             tuple: _description_
         """
+        if not self.active:
+            raise Exception("Stepping inactive environment")
         
         # initialization
         self.ticks_elapsed += 1
@@ -290,6 +295,7 @@ class MainEnv(ParallelEnv):
             t0 = time.perf_counter()
             # read action and current state
             action = np.array(action).flatten()
+            action *= self.robot_max_velocity
             dx, dy = action
             ds = action # = velocity
             dist_moved = np.linalg.norm(ds)
@@ -361,10 +367,12 @@ class MainEnv(ParallelEnv):
       
             # check if target is found (the robot has to drive to it)
             if target_dist < self.success_range:
-                # terminate all agents upon task completion
+                # terminate all agents if any one found the target
+                # teamwork makes the dream work
                 terminations = {a: True for a in self.agents}
                 self.agents = []
-                break
+                self.active=False
+                # break
             
         move_time *= 1E3
         collision_time *= 1E3
@@ -603,22 +611,24 @@ class MainEnv(ParallelEnv):
         
         # exploration reward
         if nearest_visited_dist > self.visiteds_min_dist:
-            reward += 1.5
+            reward += 2.0
             
         # TODO: maybe reward distance to average of visited points? rn only looks at nearest
         
         # re-exploration penalty
         reward += -0.1/(nearest_visited_dist + EPS_REWARD) # don't want penalty to exceed success reward
         
+        # target proximity reward
+        reward += 0.075/(target_dist + EPS_REWARD)
+        
         # target sight reward
         if target_in_sight:
-            reward += 3.0
+            reward += 1.0
             reward += 0.1/(target_dist + EPS_REWARD)
             
         # success reward
         if target_dist < self.success_range:
-            reward += 15.0
-            
+            reward += 3.0            
         return reward
   
     def regenerate_obstacles(self, obstacle_coords=None) -> None:
@@ -628,9 +638,14 @@ class MainEnv(ParallelEnv):
             obstacle_coords (_any_, optional): If used, will init obstacles there. If not, will randomize. Defaults to None.
         """
         
+        self.obstacle_coords = [] # basic calculation
+        self.obstacle_coords_points = [] # wtf
+        self.obstacles = [] # ray intersection
+        self.obstacle_edge_vectors = [] # idek
+        self.obstaclej_centers = None # faster ray intersection
+        
         tl_corners = []
         if obstacle_coords is None:
-            self.obstacle_coords = []
             for i in range(self.num_obstacles):
                 while True:
                     coord = self.get_random_coord()
@@ -998,3 +1013,67 @@ def vector_intersection_distance_jit(
         return t.item()
     else:
         return np.Inf
+
+class SinglePettingZooVecEnv(VecEnv):
+    
+    def __init__(self, pettingzoo_env: ParallelEnv):
+        """Wraps a single PettingZoo ParallelEnv into a single Stable-Baselines3 VecEnv
+
+        Args:
+            pettingzoo_env (_type_): _description_
+        """
+        self.env: ParallelEnv = pettingzoo_env
+        self.agents = self.env.possible_agents
+
+        self.num_envs = 1
+        self.num_agents = len(self.agents)
+
+        obs_space = self.env.observation_space(self.agents[0])
+        act_space = self.env.action_space(self.agents[0])
+
+        self.observation_space = obs_space
+        self.action_space = act_space
+
+        super().__init__(num_envs=1, observation_space=obs_space, action_space=act_space)
+
+    def reset(self):
+        obs, info = self.env.reset()
+        obs_array = self._convert_obs_dict_to_array(obs)
+        return obs_array
+
+    def step_async(self, actions):
+        self._actions = actions
+
+    def step_wait(self):
+        action_dict = {agent: self._actions[i] for i, agent in enumerate(self.agents)}
+        obs, rewards, terms, truncs, infos = self.env.step(action_dict)
+
+        obs_array = self._convert_obs_dict_to_array(obs)
+        reward_array = np.array([rewards[agent] for agent in self.agents])
+        done_array = np.array([terms[agent] or truncs[agent] for agent in self.agents])
+        info_array = [{} for _ in self.agents]
+
+        return obs_array, reward_array, done_array, info_array
+
+    def close(self):
+        self.env.close()
+
+    def _convert_obs_dict_to_array(self, obs_dict):
+        # Converts {agent_0: obs0, agent_1: obs1, ...} → np.array([...])
+        return np.array([obs_dict[agent] for agent in self.agents])
+
+    def get_attr(self, attr_name: str, indices = None) -> list:
+        return [getattr(self.env, attr_name)]
+
+    def set_attr(self, attr_name: str, value, indices = None) -> None:
+        setattr(self.env, attr_name, value)
+
+    def env_method(self, method_name: str, *method_args, indices = None, **method_kwargs) -> list:
+        [getattr(self.env, method_name)(*method_args, **method_kwargs)]
+
+    def env_is_wrapped(self, wrapper_class, indices = None) -> list[bool]:
+        if wrapper_class is SinglePettingZooVecEnv:
+            return [True]
+        else:
+            return [False]
+    
