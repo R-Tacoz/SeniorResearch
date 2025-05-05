@@ -404,7 +404,7 @@ class MainEnv(ParallelEnv):
             reward_time += (t0:=time.perf_counter()) - t1
       
             # check if target is found (the robot has to drive to it)
-            if target_dist < self.success_range:
+            if target_dist < self.success_range and not any(terminations.values()):
                 # terminate all agents if any one found the target
                 # teamwork makes the dream work
                 terminations = {a: True for a in self.agents}
