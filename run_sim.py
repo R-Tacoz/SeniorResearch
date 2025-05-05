@@ -14,9 +14,9 @@ from pettingzoo.test import parallel_api_test
 from utils.envs import MainEnv, SinglePettingZooVecEnv
 from pynput import keyboard
 
-LOAD_ROOT = "./saved_runs/run1"
-MODEL_PATH = LOAD_ROOT + "/ppo_agent/final_model"
-ENV_PATH = LOAD_ROOT + "/envs/vecnorm1.pkl"
+LOAD_ROOT = "./saved_runs/run2-1"
+MODEL_PATH = LOAD_ROOT + "/ppo_agent/_final-mlp3.zip"
+ENV_PATH = LOAD_ROOT + "/vecnormenv_state.pkl"
 
 FRAMERATE = 16 # also equals tickrate
 SIM_LENGTH = 100000 # frames/ticks
@@ -56,11 +56,18 @@ def main():
         )
 
     # Wrap the environment for compatibility with Stable-Baselines3
+    # I use a custom ParallelEnv -> SB3 VecEnv bc supersuit vec_env is a gym VecEnv,
+    # so you have to wrap it with a ConcatVecEnv to make it SB3-compatible, 
+    # which delinks the parallel_env instance and the vec_env instance so rendering
+    # is incorrect
     vec_env = SinglePettingZooVecEnv(parallel_env)
-    # env = ss.pettingzoo_env_to_vec_env_v1(parallel_env)
-    # env = ss.concat_vec_envs_v1(env, num_vec_envs=1, base_class="stable_baselines3")
+    # vec_env = ss.pettingzoo_env_to_vec_env_v1(parallel_env)
+    # vec_env = ss.concat_vec_envs_v1(vec_env, num_vec_envs=2, base_class="stable_baselines3")
     try:
         vec_env = VecNormalize.load(ENV_PATH, vec_env)
+        vec_env.training = False
+        vec_env.norm_reward = False
+        
     except FileNotFoundError:
         print("WARNING: No VecNormalize file found. Running without it. ")
         
@@ -82,7 +89,7 @@ def main():
             agent_actions[agent] = actions[i]
         
         # Step the original environment with the same actions
-        _, _, terms, _, _ = parallel_env.step(agent_actions)
+        # _, _, terms, _, _ = parallel_env.step(agent_actions)
         
         # Render the original environment
         parallel_env.render()

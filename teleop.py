@@ -35,7 +35,7 @@ def main():
     np.set_printoptions(linewidth=200)
     
     # env = PathEnv(framerate=FRAMERATE)
-    n_robots = 2
+    n_robots = 1
     env = MainEnv(
         num_robots = n_robots, 
         width = 18, 
@@ -43,7 +43,7 @@ def main():
         target_location = None, 
         # lidar_range = 5,
         camera_range = 8, 
-        # success_range = 1,
+        success_range = 0,
         num_obstacles=8,        
         framerate=FRAMERATE, 
         render_mode='human'

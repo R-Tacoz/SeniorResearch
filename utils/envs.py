@@ -1,4 +1,4 @@
-import time
+import sys, time
 import math
 import multiprocessing as mp # horrible idea
 from numba import jit
@@ -10,6 +10,7 @@ import functools
 from pettingzoo.utils.env import ParallelEnv
 from stable_baselines3.common.vec_env import VecEnv
 from gymnasium.spaces import Box, Discrete
+from gymnasium.vector.utils import concatenate, create_empty_array, iterate
 # TODO: atp idt we need shapely stuff anymore. we can clean it out of code when everything works
 import shapely
 from shapely.geometry import LineString, Point, box, Polygon
@@ -31,6 +32,7 @@ class MainEnv(ParallelEnv):
         'bg': (255,255,255),
         'grid': (200,200,200),
         'camera_range': (170, 170, 255),
+        'communication_range': (170, 255, 170),
         'lidar_range': (145, 145, 255),
         'success_range': (120, 120, 255),
         'lidar_point': (0,255,0),
@@ -50,12 +52,14 @@ class MainEnv(ParallelEnv):
         height: int = 20, 
         target_location: tuple | None = (8, 8), 
         lidar_range: float = 5,
-        camera_range: float = 8, 
+        camera_range: float = 8,
+        communication_range: float = 8.2,
         success_range: float = 1,
         render_mode: str | None = None, 
         seed: object = None, 
         num_obstacles: int = 6,
         framerate: int = 10,
+        first_init: bool = True,
         options: object = None,
     ):
         """init
@@ -82,6 +86,7 @@ class MainEnv(ParallelEnv):
         self.env_width: float = width
         self.env_height: float = height
         
+        self.seed = seed
         self.num_obstacles: int = num_obstacles
         self.obstacle_width: float = 3 # units are cells for now
         self.obstacle_height: float = 3
@@ -94,7 +99,10 @@ class MainEnv(ParallelEnv):
         self.lidar_range: float = lidar_range
         self.lidar_ray_count: int = LIDAR_RAY_COUNT
         self.camera_range: float = camera_range
+        self.communication_range: float = communication_range
         self.success_range: float = success_range
+        
+        self.options = options
         
         # simulation environment data
         # TODO:
@@ -157,6 +165,7 @@ class MainEnv(ParallelEnv):
         }
         
         self.robot_target_sightlines: dict[id_t, np.ndarray | None] = {}
+        self.prev_target_dists: dict[id_t, float | None] = {}
         
         self.ticks_elapsed = 0
         self.framerate = framerate
@@ -173,7 +182,8 @@ class MainEnv(ParallelEnv):
         self.sorted_range_color_pairs = sorted(
             [(self.lidar_range, self.colors['lidar_range']), 
              (self.camera_range, self.colors['camera_range']),
-             (self.success_range, self.colors['success_range'])], 
+             (self.success_range, self.colors['success_range']),
+             (self.communication_range, self.colors['communication_range'])], 
             reverse=True
         )
         self.cell_size = 50 
@@ -189,10 +199,11 @@ class MainEnv(ParallelEnv):
         # vector_intersection_distance_jit(dummy, dummy, dummy, dummy)
         
         # generate the environment
-        self.reset()
+        if first_init:
+            self.reset(first_reset=True)
 
 #    @override
-    def reset(self, seed=None, options = None) -> tuple:
+    def reset(self, seed=None, first_reset=False, options = None) -> tuple:
         """Initialize all values and re-randomizes obstacles and positions
 
         Args:
@@ -202,8 +213,27 @@ class MainEnv(ParallelEnv):
         Returns:
             tuple: obs, info
         """
+        
+        # maybe some memory leak causes the fps drops, so just reset everything
+        if first_reset:
+            self.__init__(
+                num_robots = self.num_robots, 
+                width = self.env_width, 
+                height = self.env_height, 
+                target_location = self.target_location, 
+                lidar_range = self.lidar_range,
+                camera_range = self.camera_range, 
+                communication_range = self.communication_range,
+                success_range = self.success_range,
+                render_mode = self.render_mode, 
+                seed = self.seed, 
+                num_obstacles = self.num_obstacles,
+                framerate = self.framerate,
+                first_init = False,
+                options = self.options,
+            )
+            
         self.resets_i += 1
-        #print("resets", self.resets_i, end='\n')
         self.active = True
         self.ticks_elapsed = 0
         if seed is not None:
@@ -230,7 +260,10 @@ class MainEnv(ParallelEnv):
         ])
                   
         self.robot_positions = {}
+        self.robot_box_centers = {}
+        self.robot_box_corners = {}
         self.sparse_visited_coords = np.empty((0,2))
+        self.robot_last_velocities = {}
         for agent_id in self.possible_agents:
             coords = None
             while True:
@@ -254,6 +287,9 @@ class MainEnv(ParallelEnv):
             [-self.robot_width, 0],
             [0, -self.robot_height],
         ])
+        
+        
+        self.prev_target_dists = {id_:None for id_ in self.agents}
 
         # create observations and info to return
         observations = {id: self.get_observations(id)[0] for id in self.agents}
@@ -361,7 +397,9 @@ class MainEnv(ParallelEnv):
             rewards[agent_id] = self.calc_reward(
                 agent_id, new_s, attempted_collision, target_dist, 
                 target_in_sight, dist_to_closest_visited, acceleration, 
-                dist_moved)
+                dist_moved, self.prev_target_dists[agent_id])
+            
+            self.prev_target_dists[agent_id] = target_dist
             
             reward_time += (t0:=time.perf_counter()) - t1
       
@@ -370,6 +408,7 @@ class MainEnv(ParallelEnv):
                 # terminate all agents if any one found the target
                 # teamwork makes the dream work
                 terminations = {a: True for a in self.agents}
+                # print("terminating")
                 self.agents = []
                 self.active=False
                 # break
@@ -379,6 +418,10 @@ class MainEnv(ParallelEnv):
         visiteds_time *= 1E3
         reward_time *= 1E3
         obs_time *= 1E3
+        
+        # print("env_step")
+        # print(terminations)
+        # print(truncations)
 
         # print(f"m: {move_time:.3f} c: {collision_time:.3f} v: {visiteds_time:.3f} r: {reward_time:.4f} o: {obs_time:.4f}", end='\r')  
 
@@ -591,44 +634,58 @@ class MainEnv(ParallelEnv):
         nearest_visited_dist: float,
         acceleration: float,
         dist_moved: float,
+        prev_target_dist: float,
     ) -> float:
         
         reward = 0.0
         
         # time penalty
-        reward += -0.005
+        reward += -0.01
         
         # velocity reward
-        if dist_moved > 0.1:
-            reward += 1.0
+        # if dist_moved > 0.1:
+        #     reward += 0.5
         
-        # acceleration penalty
-        reward += -0.05 * acceleration
         
         # collision penalty
         if attempted_collision:
-            reward += -0.3
+            reward += -0.2
         
         # exploration reward
         if nearest_visited_dist > self.visiteds_min_dist:
-            reward += 2.0
+            reward += 1.5
+        else:
+            # re-exploration penalty
+            reward += -0.5 * math.exp(2 * nearest_visited_dist)
             
         # TODO: maybe reward distance to average of visited points? rn only looks at nearest
+        # TODO: informatino gain reward, either number of new cells explored or 
+#         visit_counts = np.array([...])  # flat list of visit frequencies to each cell
+        # prob = visit_counts / visit_counts.sum()
+        # info_gain = entropy(prob)
+
+        # reward += 0.1 * info_gain
         
-        # re-exploration penalty
-        reward += -0.1/(nearest_visited_dist + EPS_REWARD) # don't want penalty to exceed success reward
+        # reward += -0.5/(nearest_visited_dist + EPS_REWARD) # don't want penalty to exceed success reward
         
         # target proximity reward
-        reward += 0.075/(target_dist + EPS_REWARD)
+        reward += 0.1/(target_dist + EPS_REWARD)
         
         # target sight reward
         if target_in_sight:
-            reward += 1.0
-            reward += 0.1/(target_dist + EPS_REWARD)
+            reward += 2.0
+            reward += 1 / (target_dist + EPS_REWARD)
             
+            if prev_target_dist is not None:
+                delta = prev_target_dist - target_dist
+                reward += 0.5 * delta
+        else:
+            reward += -0.05 * acceleration  # discourage excessive acceleration
+
         # success reward
         if target_dist < self.success_range:
-            reward += 3.0            
+            reward += 7.0            
+            
         return reward
   
     def regenerate_obstacles(self, obstacle_coords=None) -> None:
@@ -721,7 +778,7 @@ class MainEnv(ParallelEnv):
         self.screen.fill(self.colors['bg'])
 
         fps = self.clock.get_fps()
-        pygame.display.set_caption(f"FPS: {fps:.2f}")
+        pygame.display.set_caption(f"MAPPO Search Env | FPS: {fps:.2f}")
         
         # Draw grid
         for x in range(self.env_width):
@@ -808,7 +865,7 @@ class MainEnv(ParallelEnv):
                     self.screen,
                     self.colors['lidar_point'],
                     (coord[0] * self.cell_size, coord[1] * self.cell_size),
-                    3,
+                    2,
                 )
             
         pygame.display.flip()  # Update the screen
@@ -1025,20 +1082,22 @@ class SinglePettingZooVecEnv(VecEnv):
         self.env: ParallelEnv = pettingzoo_env
         self.agents = self.env.possible_agents
 
-        self.num_envs = 1
         self.num_agents = len(self.agents)
+        self.num_envs = self.num_agents # treat agents as separate envs to allow compatability
 
         obs_space = self.env.observation_space(self.agents[0])
         act_space = self.env.action_space(self.agents[0])
 
         self.observation_space = obs_space
         self.action_space = act_space
+        
+        self.render_mode = None
 
-        super().__init__(num_envs=1, observation_space=obs_space, action_space=act_space)
+        super().__init__(num_envs=self.num_envs, observation_space=obs_space, action_space=act_space)
 
     def reset(self):
         obs, info = self.env.reset()
-        obs_array = self._convert_obs_dict_to_array(obs)
+        obs_array = self._dict_to_array(obs)
         return obs_array
 
     def step_async(self, actions):
@@ -1047,20 +1106,22 @@ class SinglePettingZooVecEnv(VecEnv):
     def step_wait(self):
         action_dict = {agent: self._actions[i] for i, agent in enumerate(self.agents)}
         obs, rewards, terms, truncs, infos = self.env.step(action_dict)
-
-        obs_array = self._convert_obs_dict_to_array(obs)
-        reward_array = np.array([rewards[agent] for agent in self.agents])
-        done_array = np.array([terms[agent] or truncs[agent] for agent in self.agents])
-        info_array = [{} for _ in self.agents]
+        
+        obs_array = self._dict_to_array(obs)
+        reward_array = self._dict_to_array(rewards)
+        done_array = self._dict_to_array(terms) | self._dict_to_array(truncs)
+        info_array = [infos[agent] for agent in self.agents]
+        # reward_array = np.array([[rewards[agent] for agent in self.agents]])
+        # done_array = np.array([[terms[agent] or truncs[agent] for agent in self.agents]])
+        # info_array = [{} for _ in self.agents]
 
         return obs_array, reward_array, done_array, info_array
 
     def close(self):
         self.env.close()
 
-    def _convert_obs_dict_to_array(self, obs_dict):
-        # Converts {agent_0: obs0, agent_1: obs1, ...} → np.array([...])
-        return np.array([obs_dict[agent] for agent in self.agents])
+    def _dict_to_array(self, dict_):
+        return np.array([dict_[agent] for agent in self.agents])
 
     def get_attr(self, attr_name: str, indices = None) -> list:
         return [getattr(self.env, attr_name)]
