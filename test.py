@@ -1,12 +1,9 @@
 import time
 import numpy as np
 import torch
+from scipy.spatial import KDTree
 device = torch.device('cuda')
 
-a = np.random.randn(300_000,3)
-b = np.random.randn(300_000,3)
-c = torch.Tensor(a)
-d = torch.Tensor(b)
 
 
 n = 1_000_000

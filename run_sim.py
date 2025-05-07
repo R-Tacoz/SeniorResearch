@@ -14,9 +14,9 @@ from pettingzoo.test import parallel_api_test
 from utils.envs import MainEnv, SinglePettingZooVecEnv
 from pynput import keyboard
 
-LOAD_ROOT = "./saved_runs/run2-1"
-MODEL_PATH = LOAD_ROOT + "/ppo_agent/_final-mlp3.zip"
-ENV_PATH = LOAD_ROOT + "/vecnormenv_state.pkl"
+LOAD_ROOT = "./saved_runs/run8-curric/obs1"
+MODEL_PATH = LOAD_ROOT + "/ppo_agent/mlp3_1200000_steps.zip"
+ENV_PATH = LOAD_ROOT + "/mlp3_vecnormalize_1200000_steps.pkl"
 
 FRAMERATE = 16 # also equals tickrate
 SIM_LENGTH = 100000 # frames/ticks
@@ -46,7 +46,7 @@ def main():
         num_robots=N_ROBOTS, 
         width=18, 
         height=18, 
-        num_obstacles=10,
+        num_obstacles=1,
         target_location=None, 
         lidar_range=5,
         camera_range=8,
@@ -98,9 +98,9 @@ def main():
         pygame.time.delay(100)
         
         # Check if the original environment is still active
-        if end_sim or not parallel_env.active: #not parallel_env.active:# or any(terms.values()):
+        if end_sim:
             break
-        elif reset_sim:
+        elif reset_sim or not parallel_env.active:
             obs = vec_env.reset()
             reset_sim = False
             

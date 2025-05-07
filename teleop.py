@@ -4,7 +4,7 @@ import numpy as np
 from utils.envs import MainEnv, PathEnv
 from pynput import keyboard
 
-FRAMERATE = 320 # also equals tickrate
+FRAMERATE = 600 # also equals tickrate
 SIM_LENGTH = 100000 # frames/ticks
 MAX_VELO = 4 # cells / s
 MAX_DISP = 2
@@ -35,8 +35,9 @@ def main():
     np.set_printoptions(linewidth=200)
     
     # env = PathEnv(framerate=FRAMERATE)
-    n_robots = 1
+    n_robots = 2
     env = MainEnv(
+        max_episode_len=600,
         num_robots = n_robots, 
         width = 18, 
         height = 18, 

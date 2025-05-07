@@ -37,6 +37,8 @@ class MainEnv(ParallelEnv):
         'success_range': (120, 120, 255),
         'lidar_point': (0,255,0),
         'sightline': (255,150,220),
+        'nearest_visited': (200,0,0),
+        'last_visited': (0,200,0),
         'obstacle': (0,0,0),
         'target': (255,0,0),
         'robot': (0,0,255),
@@ -47,6 +49,7 @@ class MainEnv(ParallelEnv):
 
     def __init__(
         self, 
+        max_episode_len: float = float('inf'),
         num_robots: int = 3, 
         width: int = 20, 
         height: int = 20, 
@@ -62,25 +65,10 @@ class MainEnv(ParallelEnv):
         first_init: bool = True,
         options: object = None,
     ):
-        """init
-
-        Args:
-            num_robots (int, optional): _description_. Defaults to 3.
-            width (int, optional): _description_. Defaults to 20.
-            height (int, optional): _description_. Defaults to 20.
-            target_location (tuple | None, optional): _description_. Defaults to (8, 8).
-            lidar_range (float, optional): _description_. Defaults to 2.
-            camera_range (float, optional): _description_. Defaults to 2.
-            success_range (float, optional): _description_. Defaults to 1.
-            render_mode (str | None, optional): _description_. Defaults to None.
-            seed (object, optional): _description_. Defaults to None.
-            num_obstacles (int, optional): _description_. Defaults to 6.
-            framerate (int, optional): _description_. Defaults to 10.
-            options (object, optional): _description_. Defaults to None.
-        """
         super().__init__()
         
         # init params
+        self.max_episode_len = max_episode_len
         self.render_mode = render_mode
         self.num_robots: int = num_robots
         self.env_width: float = width
@@ -145,7 +133,8 @@ class MainEnv(ParallelEnv):
         
         self.robot_observation_space = Box(
             low=0., high=self.lidar_range, 
-            shape=(self.lidar_ray_count + 2 + 2,), # + camera detection + last velocity
+            # rays, target detection, last velo, nearest visited, last visited
+            shape=(self.lidar_ray_count + 3 + 2 + 2 + 2,),
             dtype=np.float32
             )
         
@@ -167,15 +156,20 @@ class MainEnv(ParallelEnv):
         self.robot_target_sightlines: dict[id_t, np.ndarray | None] = {}
         self.prev_target_dists: dict[id_t, float | None] = {}
         
+        self.last_rewards: dict[id_t, float] = {}
+        
         self.ticks_elapsed = 0
         self.framerate = framerate
     
         # agent data
         # TODO: in actual implementation, these are agent data that are stored in each agent
+        self.robot_seen_target: dict[id_t, bool] = {}
         self.robot_last_velocities: dict[id_t, tuple[float,float]] = {}
-        
+        self.robot_nearest_visited_idx: dict[id_t, int] = {}
+        self.robot_last_visited_idx: dict[id_t, int] = {}
         self.sparse_visited_coords: np.ndarray = None
         self.visiteds_min_dist: float = 0.25 * self.lidar_range
+        self.approx_visiteds_capacity: int = self.env_height * self.env_width / self.visiteds_min_dist**2
              
         #pygame render initialization
         self.active = False
@@ -217,6 +211,7 @@ class MainEnv(ParallelEnv):
         # maybe some memory leak causes the fps drops, so just reset everything
         if first_reset:
             self.__init__(
+                max_episode_len=self.max_episode_len,
                 num_robots = self.num_robots, 
                 width = self.env_width, 
                 height = self.env_height, 
@@ -258,13 +253,14 @@ class MainEnv(ParallelEnv):
             [self.robot_width/2, self.robot_height/2],
             [-self.robot_width/2, self.robot_height/2],
         ])
-                  
+               
+        self.robot_seen_target = {}   
         self.robot_positions = {}
         self.robot_box_centers = {}
         self.robot_box_corners = {}
         self.sparse_visited_coords = np.empty((0,2))
         self.robot_last_velocities = {}
-        for agent_id in self.possible_agents:
+        for i, agent_id in enumerate(self.possible_agents):
             coords = None
             while True:
                 coords = self.get_random_coord(in_grid=False)
@@ -278,7 +274,10 @@ class MainEnv(ParallelEnv):
             
             self.sparse_visited_coords = np.append(self.sparse_visited_coords, [point], axis=0)
             self.robot_last_velocities[agent_id] = (0,0)
+            self.robot_nearest_visited_idx[agent_id] = i
+            self.robot_last_visited_idx[agent_id] = i
             
+            self.robot_seen_target[agent_id] = False
             self.robot_target_sightlines[agent_id] = None
 
         self.robot_box_edge_vectors = np.array([
@@ -290,6 +289,7 @@ class MainEnv(ParallelEnv):
         
         
         self.prev_target_dists = {id_:None for id_ in self.agents}
+        self.last_rewards = {id_:0 for id_ in self.agents}
 
         # create observations and info to return
         observations = {id: self.get_observations(id)[0] for id in self.agents}
@@ -374,12 +374,17 @@ class MainEnv(ParallelEnv):
                 move_time += (t1:=time.perf_counter()) - t0
 
                 # update visited points
-                dist_to_closest_visited = self.distance_to_nearest_visited(new_s)
+                closest_visited_idx, dist_to_closest_visited = self.nearest_visited(new_s)
+                self.robot_nearest_visited_idx[agent_id] = closest_visited_idx
+                
                 if dist_to_closest_visited > self.visiteds_min_dist:
                     self.sparse_visited_coords = np.append(self.sparse_visited_coords, [new_s], axis=0)
+                    last_idx = len(self.sparse_visited_coords) - 1
+                    self.robot_nearest_visited_idx[agent_id] = last_idx
+                    self.robot_last_visited_idx[agent_id] = last_idx
                     
             else:
-                dist_to_closest_visited = self.distance_to_nearest_visited(np.array([x, y]))
+                closest_visited_idx, dist_to_closest_visited = self.nearest_visited(np.array([x, y]))
             
             visiteds_time += (t0:=time.perf_counter()) - t1
                      
@@ -390,6 +395,9 @@ class MainEnv(ParallelEnv):
             
             if not attempted_collision: # bc observations include last velocity
                 self.robot_last_velocities[agent_id] = (dx, dy)
+                
+            if target_in_sight:
+                self.robot_seen_target[agent_id] = True
             
             obs_time += (t1:=time.perf_counter()) - t0
             
@@ -397,14 +405,18 @@ class MainEnv(ParallelEnv):
             rewards[agent_id] = self.calc_reward(
                 agent_id, new_s, attempted_collision, target_dist, 
                 target_in_sight, dist_to_closest_visited, acceleration, 
-                dist_moved, self.prev_target_dists[agent_id])
+                dist_moved, self.prev_target_dists[agent_id],
+                self.robot_seen_target[agent_id])
             
-            self.prev_target_dists[agent_id] = target_dist
+            if target_in_sight:
+                self.prev_target_dists[agent_id] = target_dist
+            else:
+                self.prev_target_dists[agent_id] = None
             
             reward_time += (t0:=time.perf_counter()) - t1
       
             # check if target is found (the robot has to drive to it)
-            if target_dist < self.success_range and not any(terminations.values()):
+            if target_dist < self.success_range and self.active:
                 # terminate all agents if any one found the target
                 # teamwork makes the dream work
                 terminations = {a: True for a in self.agents}
@@ -412,6 +424,13 @@ class MainEnv(ParallelEnv):
                 self.agents = []
                 self.active=False
                 # break
+                
+        self.last_rewards = rewards
+        
+        if self.ticks_elapsed > self.max_episode_len and self.active:
+            terminations = {a: True for a in self.agents}
+            self.agents = []
+            self.active = False
             
         move_time *= 1E3
         collision_time *= 1E3
@@ -442,7 +461,8 @@ class MainEnv(ParallelEnv):
         t0 = time.perf_counter() * 1000
         
         # Camera detection
-        camera_detection = np.array([1, 0]) # default if no detection is camera range (normalized), zero heading
+        # detection in sight, scaled distance to detection, scaled heading to detection
+        camera_detection = np.array([0, 1, 0]) # default if no detection is camera range (normalized), zero heading
         disp_to_target = self.target_location - coords
         target_dist = np.linalg.norm(disp_to_target)
         in_sight = False
@@ -471,8 +491,9 @@ class MainEnv(ParallelEnv):
                 # assume robot is facing right where heading=0
                 target_heading = np.arctan2(disp_to_target[1],disp_to_target[0]) 
                 
-                camera_detection[0] = target_dist / self.camera_range
-                camera_detection[1] = target_heading / math.pi
+                camera_detection[0] = 1
+                camera_detection[1] = target_dist / self.camera_range
+                camera_detection[2] = target_heading / math.pi
             
             # break sight when an obstacle blocks view
             else:
@@ -488,10 +509,28 @@ class MainEnv(ParallelEnv):
         t3 = time.perf_counter() * 1000
         
         # Displacement history
-        # TODO: maybe displacement vector to average of the visiteds
+        # Visiteds average
+        
+        # Nearest visiteds
+        nearest_visited = self.sparse_visited_coords[self.robot_nearest_visited_idx[agent_id]]
+        nearest_visited_disp = (nearest_visited - coords) / self.visiteds_min_dist
+        
+        # Last visited
+        last_visited = self.sparse_visited_coords[self.robot_last_visited_idx[agent_id]]
+        last_visited_disp = (last_visited - coords) / self.visiteds_min_dist
                  
         data = [target_dist, in_sight] # extra data for reward calculation 
-        observations = np.concatenate([lidar_scan, camera_detection, last_velocity], axis=0)
+        observations = np.concatenate(
+            [
+                lidar_scan, 
+                camera_detection, 
+                last_velocity, 
+                nearest_visited_disp,
+                last_visited_disp,
+            ], 
+            axis=0,
+        )
+        
         return observations, data
 
     def get_random_coord(self, in_grid=True) -> tuple:
@@ -619,10 +658,12 @@ class MainEnv(ParallelEnv):
             
         return False
     
-    def distance_to_nearest_visited(self, coords) -> float:
-        dist = np.min(np.linalg.norm(self.sparse_visited_coords - coords, axis=-1))
+    def nearest_visited(self, coords) -> tuple:
+        dists = np.linalg.norm(self.sparse_visited_coords - coords, axis=-1)
+        idx = np.argmin(dists, axis=0)
+        min_dist = dists[idx]
         
-        return dist
+        return idx, min_dist
     
     def calc_reward(
         self, 
@@ -635,6 +676,7 @@ class MainEnv(ParallelEnv):
         acceleration: float,
         dist_moved: float,
         prev_target_dist: float,
+        seen_target: bool
     ) -> float:
         
         reward = 0.0
@@ -642,49 +684,77 @@ class MainEnv(ParallelEnv):
         # time penalty
         reward += -0.01
         
+        # collision penalty
+        if attempted_collision:
+            reward += -0.05
+            
         # velocity reward
         # if dist_moved > 0.1:
         #     reward += 0.5
         
+        # acceleration penalty
+        reward += -0.02 * acceleration
         
-        # collision penalty
-        if attempted_collision:
-            reward += -0.2
+        # general target proximity reward - exponential
+        # reward += 0.03 * math.exp(-0.85 * target_dist)
+        if prev_target_dist is not None:
+            target_dist_delta = prev_target_dist - target_dist
+        #     reward += 0.01 * target_dist_delta
         
-        # exploration reward
-        if nearest_visited_dist > self.visiteds_min_dist:
-            reward += 1.5
-        else:
-            # re-exploration penalty
-            reward += -0.5 * math.exp(2 * nearest_visited_dist)
+        # exploration rewards when target isn't in sight
+        base_exp_rew = 1.2
+        if not target_in_sight:
+            # re-exploration penalty (+ reward too ig)
+            reward += -0.1 * (1 - nearest_visited_dist / self.visiteds_min_dist) # proportional, max = 0
+            # reward += -0.3 * math.exp(2 * nearest_visited_dist) # exponential
+            # reward += -0.3 / (nearest_visited_dist + EPS_REWARD) # inversely proportional
             
+            # flat exploration reward
+            if not seen_target and nearest_visited_dist > self.visiteds_min_dist:
+                reward += base_exp_rew
+                                
+            
+            
+        # target in sight rewards
+        else:
+            # match and maximize all exploration rewards
+            # re-exploration penalty max
+            reward += 0.0
+            
+            # flat exploration reward max
+            reward += base_exp_rew
+            
+            # total exploration 90% max
+            # reward += 0.04 * 0.9 * self.approx_visiteds_capacity
+            
+            # target proximity reward
+            eps_tpr = 1.5 # 0.66 max
+            # reward += 1 / (target_dist + eps_tpr) # 0.66 max, 
+            
+            if prev_target_dist is not None:
+                # target security progress reward
+                reward += 1.0 * target_dist_delta
+                
+                # target loiter penalty - tailored to negate all unconditional target-in-sight rewards in zero progress
+                tlp_coef = 0.3
+                tdd_clipped = min(target_dist_delta, tlp_coef/base_exp_rew - 5e-2)
+                reward += -tlp_coef / (tdd_clipped + tlp_coef/base_exp_rew)
+                
+        # success reward
+        if target_dist < self.success_range:
+            reward += 15.0
+            
+        # failure penalty
+        if self.ticks_elapsed > self.max_episode_len:
+            reward += -5.0
+        
         # TODO: maybe reward distance to average of visited points? rn only looks at nearest
         # TODO: informatino gain reward, either number of new cells explored or 
 #         visit_counts = np.array([...])  # flat list of visit frequencies to each cell
         # prob = visit_counts / visit_counts.sum()
         # info_gain = entropy(prob)
 
-        # reward += 0.1 * info_gain
-        
-        # reward += -0.5/(nearest_visited_dist + EPS_REWARD) # don't want penalty to exceed success reward
-        
-        # target proximity reward
-        reward += 0.1/(target_dist + EPS_REWARD)
-        
-        # target sight reward
-        if target_in_sight:
-            reward += 2.0
-            reward += 1 / (target_dist + EPS_REWARD)
-            
-            if prev_target_dist is not None:
-                delta = prev_target_dist - target_dist
-                reward += 0.5 * delta
-        else:
-            reward += -0.05 * acceleration  # discourage excessive acceleration
-
-        # success reward
-        if target_dist < self.success_range:
-            reward += 7.0            
+        # reward += 0.1 * info_gain      
             
         return reward
   
@@ -699,7 +769,8 @@ class MainEnv(ParallelEnv):
         self.obstacle_coords_points = [] # wtf
         self.obstacles = [] # ray intersection
         self.obstacle_edge_vectors = [] # idek
-        self.obstaclej_centers = None # faster ray intersection
+        self.obstacle_centers = None # faster ray intersection
+
         
         tl_corners = []
         if obstacle_coords is None:
@@ -778,7 +849,8 @@ class MainEnv(ParallelEnv):
         self.screen.fill(self.colors['bg'])
 
         fps = self.clock.get_fps()
-        pygame.display.set_caption(f"MAPPO Search Env | FPS: {fps:.2f}")
+        total_reward = sum(self.last_rewards.values())
+        pygame.display.set_caption(f"MAPPO Search Env | FPS: {fps:.2f} | Tot Reward: {total_reward:.4f}")
         
         # Draw grid
         for x in range(self.env_width):
@@ -826,6 +898,28 @@ class MainEnv(ParallelEnv):
                 start * self.cell_size,
                 end * self.cell_size,
                 6,
+            )
+            
+        for id_, idx in self.robot_nearest_visited_idx.items():
+            start = self.robot_positions[id_]
+            end = self.sparse_visited_coords[idx]
+            pygame.draw.line(
+                self.screen,
+                self.colors['nearest_visited'],
+                start * self.cell_size,
+                end * self.cell_size,
+                3,
+            )
+            
+        for id_, idx in self.robot_last_visited_idx.items():
+            start = self.robot_positions[id_]
+            end = self.sparse_visited_coords[idx]
+            pygame.draw.line(
+                self.screen,
+                self.colors['last_visited'],
+                start * self.cell_size,
+                end * self.cell_size,
+                3,
             )
             
         # Draw target (red)
