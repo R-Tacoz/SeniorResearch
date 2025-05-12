@@ -11,12 +11,13 @@ from stable_baselines3.common.env_checker import check_env
 from stable_baselines3.common.policies import ActorCriticCnnPolicy, ActorCriticPolicy, BasePolicy, MultiInputActorCriticPolicy
 from pettingzoo.utils import parallel_to_aec
 from pettingzoo.test import parallel_api_test
-from utils.envs import MainEnv, SinglePettingZooVecEnv
+from utils.envs import MainEnv, SinglePettingZooVecEnv, SpiralEnv, SquareHexEnv
 from pynput import keyboard
 
-LOAD_ROOT = "./saved_runs/run8-curric/obs1"
-MODEL_PATH = LOAD_ROOT + "/ppo_agent/mlp3_1200000_steps.zip"
-ENV_PATH = LOAD_ROOT + "/mlp3_vecnormalize_1200000_steps.pkl"
+LOAD_ROOT = "./saved_runs/curric1/5hex2_1-0"
+MODEL_PATH = LOAD_ROOT + "/conv1mlp2-final"
+# MODEL_PATH = LOAD_ROOT + "/checkpoints/conv1mlp2_360000_steps"
+ENV_PATH = LOAD_ROOT + "/vecnormenv_state-final.pkl"
 
 FRAMERATE = 16 # also equals tickrate
 SIM_LENGTH = 100000 # frames/ticks
@@ -42,18 +43,21 @@ def main():
     
     
     # Testing environment
-    parallel_env = MainEnv(
-        num_robots=N_ROBOTS, 
-        width=18, 
-        height=18, 
-        num_obstacles=1,
-        target_location=None, 
-        lidar_range=5,
-        camera_range=8,
-        success_range=1,
-        framerate=FRAMERATE,
-        render_mode="human",
-        )
+    # parallel_env = MainEnv(
+    #     num_robots=N_ROBOTS, 
+    #     width=18, 
+    #     height=18, 
+    #     num_obstacles=6,
+    #     target_location=None, 
+    #     lidar_range=5,
+    #     camera_range=8,
+    #     success_range=1,
+    #     framerate=FRAMERATE,
+    #     render_mode="human",
+    #     )
+    
+    # parallel_env = SpiralEnv()
+    parallel_env = SquareHexEnv(width=20, height=20, square_length=3, gap_size=2)
 
     # Wrap the environment for compatibility with Stable-Baselines3
     # I use a custom ParallelEnv -> SB3 VecEnv bc supersuit vec_env is a gym VecEnv,
@@ -101,6 +105,7 @@ def main():
         if end_sim:
             break
         elif reset_sim or not parallel_env.active:
+            # print(parallel_env.ep_tot_rewards)
             obs = vec_env.reset()
             reset_sim = False
             

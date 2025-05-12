@@ -29,29 +29,44 @@ class AgentCNN(BaseFeaturesExtractor):
         This corresponds to the number of unit for the last layer.
     """
 
-    def __init__(self, observation_space: spaces.Box, features_dim: int = 256):
+    def __init__(self, observation_space: spaces.Box, features_dim: int = 256, lidar_rays_count: int = 90):
         super().__init__(observation_space, features_dim)
         # We assume CxHxW images (channels first)
         # Re-ordering will be done by pre-preprocessing or wrapper
-        n_input_channels = observation_space.shape[0]
+        # n_input_channels = observation_space.shape[0]
+        self.lidar_rays_count = lidar_rays_count
+        self.others_size = observation_space.shape[0] - lidar_rays_count
+        
+        n_input_channels = 1
         self.cnn = nn.Sequential(
-            nn.Conv2d(n_input_channels, 32, kernel_size=8, stride=4, padding=0),
+            nn.Conv1d(n_input_channels, 4, kernel_size=5, stride=2, padding=0),
+            nn.MaxPool1d(kernel_size=3, stride=3),
             nn.ReLU(),
-            nn.Conv2d(32, 64, kernel_size=4, stride=2, padding=0),
-            nn.ReLU(),
+            # nn.Conv2d(32, 64, kernel_size=4, stride=2, padding=0),
+            # nn.ReLU(),
             nn.Flatten(),
         )
 
         # Compute shape by doing one forward pass
         with torch.no_grad():
-            n_flatten = self.cnn(
-                torch.as_tensor(observation_space.sample()[None]).float()
+            n_flatten = self.cnn(torch.zeros(1, n_input_channels, lidar_rays_count)
+                # torch.as_tensor(observation_space.sample()[None]).float()
             ).shape[1]
 
-        self.linear = nn.Sequential(nn.Linear(n_flatten, features_dim), nn.ReLU())
+        self.linear = nn.Sequential(nn.Linear(n_flatten + self.others_size, features_dim), nn.ReLU())
 
     def forward(self, observations: torch.Tensor) -> torch.Tensor:
-        return self.linear(self.cnn(observations))
+        
+        lidar_scan = observations[:,:self.lidar_rays_count]
+        scan_features = self.cnn(lidar_scan.unsqueeze(dim=1))
+        
+        non_scan = observations[:,self.lidar_rays_count:]
+        
+        new_obs = torch.cat((scan_features, non_scan), dim=-1)
+        
+        out = self.linear(new_obs)
+        
+        return out
       
 class ConvAgent(ActorCriticCnnPolicy):
     

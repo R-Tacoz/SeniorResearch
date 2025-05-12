@@ -1,6 +1,6 @@
 import numpy as np
 from utils.agents import RandomAgent, MLPAgent, ConvAgent
-from utils.envs import MainEnv, PathEnv
+from utils.envs import MainEnv, SpiralEnv
 
 def main():
     

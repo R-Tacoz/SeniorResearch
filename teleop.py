@@ -1,24 +1,26 @@
 import time
 import numpy as np
 # from utils.envs_torch import MainEnv
-from utils.envs import MainEnv, PathEnv
+from utils.envs import MainEnv, SpiralEnv, SquareHexEnv
 from pynput import keyboard
 
-FRAMERATE = 600 # also equals tickrate
+FRAMERATE = 10 # also equals tickrate
 SIM_LENGTH = 100000 # frames/ticks
 MAX_VELO = 4 # cells / s
 MAX_DISP = 2
 x_input, y_input = 0,0
 reset_sim = False
+end_sim = False
 
 def on_press(key):
-    global x_input, y_input, reset_sim
+    global x_input, y_input, reset_sim, end_sim
     if key == keyboard.Key.up:      y_input = -1
     elif key == keyboard.Key.down:  y_input = 1
     elif key == keyboard.Key.right: x_input = 1
     elif key == keyboard.Key.left:  x_input = -1
     elif isinstance(key, keyboard.KeyCode):
             if key.char == 'r': reset_sim = True
+            elif key.char == 'q': end_sim = True
 
 def on_release(key):
     global x_input, y_input
@@ -34,24 +36,29 @@ def main():
     
     np.set_printoptions(linewidth=200)
     
-    # env = PathEnv(framerate=FRAMERATE)
-    n_robots = 2
-    env = MainEnv(
-        max_episode_len=600,
-        num_robots = n_robots, 
-        width = 18, 
-        height = 18, 
-        target_location = None, 
-        # lidar_range = 5,
-        camera_range = 8, 
-        success_range = 0,
-        num_obstacles=8,        
-        framerate=FRAMERATE, 
-        render_mode='human'
+    # env = SpiralEnv(framerate=FRAMERATE)
+    env = SquareHexEnv(
+        square_length=None,
+        gap_size=None,
     )
+    n_robots = 1
+    # env = MainEnv(
+    #     # max_episode_len=600,
+    #     num_robots = n_robots, 
+    #     width = 18, 
+    #     height = 18, 
+    #     target_location = None, 
+    #     # lidar_range = 5,
+    #     camera_range = 8, 
+    #     success_range = 1,
+    #     num_obstacles=8,        
+    #     framerate=FRAMERATE, 
+    #     render_mode='human'
+    # )
     
     t0 = time.perf_counter()
-    for _ in range(SIM_LENGTH):
+    # for _ in range(SIM_LENGTH):
+    while not end_sim:
         dt = time.perf_counter() - t0
         t0 += dt
         
@@ -72,12 +79,11 @@ def main():
         #print(f"{env.robot_positions['robot_0'][0]:.2f}, {env.robot_positions['robot_0'][1]:.2f}", end='\r')
         env.render()
         
-        if reset_sim:
+        if reset_sim or not env.active:
+            print(env.ep_tot_rewards)
             obs = env.reset()
             reset_sim = False
 
-        if not env.active:
-            break
 
     env.close()
     

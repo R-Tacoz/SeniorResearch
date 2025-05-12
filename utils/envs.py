@@ -115,7 +115,7 @@ class MainEnv(ParallelEnv):
         self.obstacle_centers: np.ndarray = [] # faster ray intersection
         self.obstacle_tree: KDTree = None
         # TODO: approximate obstacle radius for each obstacle as a ndarray
-        self.approx_obs_radius: float = np.linalg.norm((self.obstacle_width/2, self.obstacle_height/2))
+        self.approx_obs_radii: float = np.linalg.norm((self.obstacle_width/2, self.obstacle_height/2))
         # TODO: look into quadtree and K-D-trees for obstacle querying
         # ^^^ :) maybe not. lets recheck if we increase env size past 20x20 and 8 obstacles 
         
@@ -134,7 +134,7 @@ class MainEnv(ParallelEnv):
         self.robot_observation_space = Box(
             low=0., high=self.lidar_range, 
             # rays, target detection, last velo, nearest visited, last visited
-            shape=(self.lidar_ray_count + 3 + 2 + 2 + 2,),
+            shape=(self.lidar_ray_count + 4 + 2 + 2 + 2,),
             dtype=np.float32
             )
         
@@ -157,6 +157,7 @@ class MainEnv(ParallelEnv):
         self.prev_target_dists: dict[id_t, float | None] = {}
         
         self.last_rewards: dict[id_t, float] = {}
+        self.ep_tot_rewards: dict[id_t, float] = {}
         
         self.ticks_elapsed = 0
         self.framerate = framerate
@@ -238,7 +239,8 @@ class MainEnv(ParallelEnv):
 
         # regenerate obstacles
         self.regenerate_obstacles()
-
+        self.approx_obs_radii = np.linalg.norm((self.obstacle_width/2, self.obstacle_height/2))
+        
         # re-randomize target location
         if self.randomize_target:
             while True:
@@ -290,6 +292,7 @@ class MainEnv(ParallelEnv):
         
         self.prev_target_dists = {id_:None for id_ in self.agents}
         self.last_rewards = {id_:0 for id_ in self.agents}
+        self.ep_tot_rewards = {id_:0 for id_ in self.agents}
 
         # create observations and info to return
         observations = {id: self.get_observations(id)[0] for id in self.agents}
@@ -426,6 +429,8 @@ class MainEnv(ParallelEnv):
                 # break
                 
         self.last_rewards = rewards
+        for id_ in self.ep_tot_rewards:
+            self.ep_tot_rewards[id_] += self.last_rewards[id_]
         
         if self.ticks_elapsed > self.max_episode_len and self.active:
             terminations = {a: True for a in self.agents}
@@ -462,7 +467,7 @@ class MainEnv(ParallelEnv):
         
         # Camera detection
         # detection in sight, scaled distance to detection, scaled heading to detection
-        camera_detection = np.array([0, 1, 0]) # default if no detection is camera range (normalized), zero heading
+        camera_detection = np.zeros(4) # default if no detection is camera range (normalized), zero heading
         disp_to_target = self.target_location - coords
         target_dist = np.linalg.norm(disp_to_target)
         in_sight = False
@@ -473,7 +478,7 @@ class MainEnv(ParallelEnv):
             # check no obstacles block view
             in_sight = True
             
-            sightline = self.target_location - coords
+            sightline = disp_to_target
             for obs_set in self.obstacle_edge_vectors:
                 for (start, edge) in obs_set:
                     dist_factor = vector_intersection_distance_jit(coords, sightline, edge, start)
@@ -489,11 +494,14 @@ class MainEnv(ParallelEnv):
                 self.robot_target_sightlines[agent_id] = sightline
                 
                 # assume robot is facing right where heading=0
-                target_heading = np.arctan2(disp_to_target[1],disp_to_target[0]) 
+                # target_heading = np.arctan2(disp_to_target[1],disp_to_target[0]) 
                 
                 camera_detection[0] = 1
-                camera_detection[1] = target_dist / self.camera_range
-                camera_detection[2] = target_heading / math.pi
+                camera_detection[1] = 1
+                camera_detection[1] = sightline[0] / self.camera_range
+                camera_detection[2] = sightline[1] / self.camera_range
+                # camera_detection[1] = target_dist / self.camera_range
+                # camera_detection[2] = target_heading / math.pi
             
             # break sight when an obstacle blocks view
             else:
@@ -550,7 +558,7 @@ class MainEnv(ParallelEnv):
         # obstacles
         obstacle_displacements = self.obstacle_centers - origin
         obstacle_distances = np.linalg.norm(obstacle_displacements, axis=1) # broadcasts
-        obstacle_distances -= self.approx_obs_radius # can be converted to an array
+        obstacle_distances -= self.approx_obs_radii # can be converted to an array
         close_obstacle_center_indices = (obstacle_distances <= self.lidar_range).nonzero()[0]
         
         t0 = time.perf_counter() * 1000
@@ -559,7 +567,7 @@ class MainEnv(ParallelEnv):
             # this assumes obstacles are all convex. if they aren't, we can add another data variable to indicate it
             displacement = obstacle_displacements[idx]
             angle_to_obstacle = np.arctan2(displacement[1], displacement[0])
-            indices = get_fov_mask_indices(self.lidar_angles, angle_to_obstacle, np.pi)
+            indices = get_fov_mask_indices(self.lidar_angles, angle_to_obstacle, 2*np.pi)
             # indices = self.lidar_ray_indices
             
             for start_corner, edge_vec in self.obstacle_edge_vectors[idx]:
@@ -677,31 +685,32 @@ class MainEnv(ParallelEnv):
         dist_moved: float,
         prev_target_dist: float,
         seen_target: bool
-    ) -> float:
+    ) -> float: 
         
         reward = 0.0
         
         # time penalty
-        reward += -0.01
+        # reward += -0.01
         
         # collision penalty
         if attempted_collision:
-            reward += -0.05
+            reward += -0.2
             
         # velocity reward
         # if dist_moved > 0.1:
         #     reward += 0.5
         
         # acceleration penalty
-        reward += -0.02 * acceleration
+        reward += -0.075 * acceleration
         
         # general target proximity reward - exponential
         # reward += 0.03 * math.exp(-0.85 * target_dist)
+        reward += -0.2 * target_dist
         if prev_target_dist is not None:
             target_dist_delta = prev_target_dist - target_dist
         #     reward += 0.01 * target_dist_delta
         
-        # exploration rewards when target isn't in sight
+        # # exploration rewards when target isn't in sight
         base_exp_rew = 1.2
         if not target_in_sight:
             # re-exploration penalty (+ reward too ig)
@@ -716,29 +725,29 @@ class MainEnv(ParallelEnv):
             
             
         # target in sight rewards
-        else:
-            # match and maximize all exploration rewards
-            # re-exploration penalty max
-            reward += 0.0
+        # else:
+        #     # match and maximize all exploration rewards
+        #     # re-exploration penalty max
+        #     reward += 0.0
             
-            # flat exploration reward max
-            reward += base_exp_rew
+        #     # flat exploration reward max
+        #     reward += base_exp_rew
             
-            # total exploration 90% max
-            # reward += 0.04 * 0.9 * self.approx_visiteds_capacity
+        #     # total exploration 90% max
+        #     # reward += 0.04 * 0.9 * self.approx_visiteds_capacity
             
-            # target proximity reward
-            eps_tpr = 1.5 # 0.66 max
-            # reward += 1 / (target_dist + eps_tpr) # 0.66 max, 
+        #     # target proximity reward
+        #     eps_tpr = 1.5 # 0.66 max
+        #     # reward += 1 / (target_dist + eps_tpr) # 0.66 max, 
             
-            if prev_target_dist is not None:
-                # target security progress reward
-                reward += 1.0 * target_dist_delta
+        #     if prev_target_dist is not None:
+        #         # target security progress reward
+        #         reward += 1.0 * target_dist_delta
                 
-                # target loiter penalty - tailored to negate all unconditional target-in-sight rewards in zero progress
-                tlp_coef = 0.3
-                tdd_clipped = min(target_dist_delta, tlp_coef/base_exp_rew - 5e-2)
-                reward += -tlp_coef / (tdd_clipped + tlp_coef/base_exp_rew)
+        #         # target loiter penalty - tailored to negate all unconditional target-in-sight rewards in zero progress
+        #         tlp_coef = 0.3
+        #         tdd_clipped = max(target_dist_delta, -tlp_coef/base_exp_rew + 5e-2)
+        #         reward += -tlp_coef / (tdd_clipped + tlp_coef/base_exp_rew)
                 
         # success reward
         if target_dist < self.success_range:
@@ -746,7 +755,7 @@ class MainEnv(ParallelEnv):
             
         # failure penalty
         if self.ticks_elapsed > self.max_episode_len:
-            reward += -5.0
+            reward += -15.0
         
         # TODO: maybe reward distance to average of visited points? rn only looks at nearest
         # TODO: informatino gain reward, either number of new cells explored or 
@@ -795,8 +804,17 @@ class MainEnv(ParallelEnv):
                 maxx, maxy = x + w, y + h
                 self.obstacle_coords_points.append((x,y,maxx,maxy))
                 self.obstacles.append(box(x,y,maxx,maxy)) 
-                
-        self.obstacle_centers = np.array(tl_corners) + np.array([self.obstacle_width/2, self.obstacle_height/2])  # shape (num_obstacles, 2)
+        
+        if isinstance(self.obstacle_width, np.ndarray):
+            half_diags = np.concatenate(
+                [
+                    self.obstacle_width.reshape(-1,1)/2, 
+                    self.obstacle_height.reshape(-1,1)/2
+                ], 
+                axis=1)
+            self.obstacle_centers = np.array(tl_corners) + half_diags
+        else:
+            self.obstacle_centers = np.array(tl_corners) + np.array([[self.obstacle_width/2, self.obstacle_height/2]])  # shape (num_obstacles, 2)
             
         for minx, miny, maxx, maxy in self.obstacle_coords_points: 
             edges = [
@@ -977,15 +995,22 @@ class MainEnv(ParallelEnv):
             pygame.quit()
             self.screen = None
             
-class PathEnv(MainEnv):
-    def __init__(self, framerate=5):
+class SpiralEnv(MainEnv):
+    
+    def __init__(
+        self, 
+        max_episode_len=float('inf'),
+        framerate=5
+    ):
         super().__init__(
-            num_robots=1, 
-            width=20, 
-            height=20, 
-            target_location=(19, 19), 
-            lidar_range=2,
-            camera_range=0.5, 
+            max_episode_len=max_episode_len,
+            num_robots=3, 
+            width=18, 
+            height=18, 
+            target_location=(9.5, 7.5), 
+            lidar_range=5,
+            camera_range=8, 
+            success_range=1,
             render_mode = "human", 
             seed = None, 
             num_obstacles=0,
@@ -994,14 +1019,14 @@ class PathEnv(MainEnv):
             )
         self.reset()
         
-    def reset(self):
+    def reset(self, **kwargs):
         self.resets_i += 1
         self.ticks_elapsed = 0
         self.active = True
 
         self.agents = self.possible_agents[:]
 
-        self.robot_positions = {f"robot_{i}": tuple([0, 3.5]) for i in range(self.num_robots)}
+        # self.robot_positions = {f"robot_{i}": tuple([1.5, 1.5]) for i in range(self.num_robots)}
         self.sparse_visited_coords = np.empty((0,2))
         
         for agent_id in self.robot_positions:
@@ -1010,25 +1035,199 @@ class PathEnv(MainEnv):
             self.sparse_visited_coords = np.append(self.sparse_visited_coords, [point], axis=0)             
             self.robot_last_velocities[agent_id] = (0,0)
         
-        obstacle_coords = [
-            (0, 0, 20, 3),
-            (0, 6, 14, 15),
-            (17, 2, 3, 15),
-        ]
+        obstacle_coords = np.array([
+            (3, 0, 1, 15),
+            (3, 14, 12, 1),
+            (14, 3, 1, 12),
+            (7, 3, 8, 1),
+            (7, 3, 1, 8),
+            (8, 10, 3, 1),
+        ])
+        self.obstacle_width = np.array(obstacle_coords[:,2])
+        self.obstacle_height = np.array(obstacle_coords[:,3])
         self.regenerate_obstacles(obstacle_coords)
+        self.approx_obs_radii = np.linalg.norm((self.obstacle_width/2, self.obstacle_height/2))
         
+        # re-randomize agent positions and initialize the visited set
+        corners_template = np.array([
+            [-self.robot_width/2, -self.robot_height/2],
+            [self.robot_width/2, -self.robot_height/2],
+            [self.robot_width/2, self.robot_height/2],
+            [-self.robot_width/2, self.robot_height/2],
+        ])
+               
+        self.robot_seen_target = {}   
+        self.robot_positions = {}
+        self.robot_box_centers = {}
+        self.robot_box_corners = {}
+        self.sparse_visited_coords = np.empty((0,2))
+        self.robot_last_velocities = {}
+        for i, agent_id in enumerate(self.possible_agents):
+            coords = None
+            while True:
+                coords = self.get_random_coord(in_grid=False)
+                if not self.is_collision(coords): 
+                    break
+                
+            point = np.array(coords)
+            self.robot_positions[agent_id] = point
+            self.robot_box_centers[agent_id] = point
+            self.robot_box_corners[agent_id] = point + corners_template
+            
+            self.sparse_visited_coords = np.append(self.sparse_visited_coords, [point], axis=0)
+            self.robot_last_velocities[agent_id] = (0,0)
+            self.robot_nearest_visited_idx[agent_id] = i
+            self.robot_last_visited_idx[agent_id] = i
+            
+            self.robot_seen_target[agent_id] = False
+            self.robot_target_sightlines[agent_id] = None
+
+        self.robot_box_edge_vectors = np.array([
+            [self.robot_width, 0],
+            [0, self.robot_height],
+            [-self.robot_width, 0],
+            [0, -self.robot_height],
+        ])
+        
+        
+        self.prev_target_dists = {id_:None for id_ in self.agents}
+        self.last_rewards = {id_:0 for id_ in self.agents}
+        self.ep_tot_rewards = {id_:0 for id_ in self.agents}
+
+        # create observations and info to return
         observations = {id: self.get_observations(id)[0] for id in self.agents}
         self.obs_r = observations
         info = {id: {} for id in self.agents}
         
         return observations, info
         
-class OpenEnv(MainEnv):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+class SquareHexEnv(MainEnv):
+    def __init__(self, width=20, height=20, square_length=3, gap_size=2):
+        super().__init__(
+            max_episode_len = float('inf'),
+            num_robots = 3, 
+            width = width, 
+            height = height, 
+            target_location = None, 
+            lidar_range = 5,
+            camera_range = 8,
+            communication_range = 8.2,
+            success_range = 0.75,
+            render_mode = "human", 
+            seed = None, 
+            num_obstacles = 0,
+            framerate = 10,
+            first_init = False,
+            options = None,
+        )
+        self.square_length = square_length
+        self.gap_size = gap_size
         
-        self.obstacle_coords = []
-        self.obstacles = []   
+        self.min_sq_len = 1
+        self.max_sq_len = 5
+        self.min_gap_size = 0.8
+        self.max_gap_size = 3
+        
+        self.reset()
+        
+    def reset(self, **kwargs):
+        self.resets_i += 1
+        self.ticks_elapsed = 0
+        self.active = True
+
+        self.agents = self.possible_agents[:]
+        
+        # generate hex obstacle pattern
+        sq_len = np.random.random() if self.square_length is None else self.square_length
+        sq_len = self.min_sq_len + sq_len * (self.max_sq_len - self.min_sq_len)
+        
+        gap_size = np.random.random() if self.gap_size is None else self.gap_size
+        gap_size = self.min_gap_size + gap_size * (self.max_gap_size - self.min_gap_size)
+        
+        obstacle_coords = []
+        i_max = int(self.env_height*1.5 / (sq_len + gap_size))
+        j_max = int((self.env_width + gap_size) / (sq_len + gap_size)) + 1
+        for i in range(i_max):
+            for j in range(j_max):
+                y = i * (sq_len + gap_size)
+                x = -gap_size + j * (sq_len + gap_size)
+                
+                y_offset = -x/(sq_len + gap_size)
+                x_offset = y/(2*(sq_len + gap_size))
+                obs_y = y + y_offset
+                obs_x = x + x_offset
+                
+                if (
+                    0-sq_len < obs_y < self.env_height and 
+                    0-sq_len < obs_x < self.env_width
+                ):
+                    obstacle_coords.append([obs_x, obs_y, sq_len, sq_len])
+                
+        self.obstacle_width = sq_len
+        self.obstacle_height = sq_len
+        self.regenerate_obstacles(obstacle_coords)
+        self.approx_obs_radii = np.linalg.norm((self.obstacle_width/2, self.obstacle_height/2))
+        
+        # re-randomize target location
+        if self.randomize_target:
+            while True:
+                self.target_location = self.get_random_coord()
+                if not self.is_collision(self.target_location):
+                    break
+        
+        # re-randomize agent positions and initialize the visited set
+        corners_template = np.array([
+            [-self.robot_width/2, -self.robot_height/2],
+            [self.robot_width/2, -self.robot_height/2],
+            [self.robot_width/2, self.robot_height/2],
+            [-self.robot_width/2, self.robot_height/2],
+        ])
+               
+        self.robot_seen_target = {}   
+        self.robot_positions = {}
+        self.robot_box_centers = {}
+        self.robot_box_corners = {}
+        self.sparse_visited_coords = np.empty((0,2))
+        self.robot_last_velocities = {}
+        for i, agent_id in enumerate(self.possible_agents):
+            coords = None
+            while True:
+                coords = self.get_random_coord(in_grid=False)
+                if not self.is_collision(coords): 
+                    break
+                
+            point = np.array(coords)
+            self.robot_positions[agent_id] = point
+            self.robot_box_centers[agent_id] = point
+            self.robot_box_corners[agent_id] = point + corners_template
+            
+            self.sparse_visited_coords = np.append(self.sparse_visited_coords, [point], axis=0)
+            self.robot_last_velocities[agent_id] = (0,0)
+            self.robot_nearest_visited_idx[agent_id] = i
+            self.robot_last_visited_idx[agent_id] = i
+            
+            self.robot_seen_target[agent_id] = False
+            self.robot_target_sightlines[agent_id] = None
+
+        self.robot_box_edge_vectors = np.array([
+            [self.robot_width, 0],
+            [0, self.robot_height],
+            [-self.robot_width, 0],
+            [0, -self.robot_height],
+        ])
+        
+        
+        self.prev_target_dists = {id_:None for id_ in self.agents}
+        self.last_rewards = {id_:0 for id_ in self.agents}
+        self.ep_tot_rewards = {id_:0 for id_ in self.agents}
+
+        # create observations and info to return
+        observations = {id: self.get_observations(id)[0] for id in self.agents}
+        self.obs_r = observations
+        info = {id: {} for id in self.agents}
+        
+        return observations, info
+        
 
 @jit(nopython=True, parallel=True)
 def is_collision_jit(
