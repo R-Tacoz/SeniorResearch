@@ -792,7 +792,7 @@ class MainEnv(ParallelEnv):
         
         reward = 0.0
         
-        # time penalty
+        #time penalty
         reward += -0.01
         
         # collision penalty
@@ -801,22 +801,22 @@ class MainEnv(ParallelEnv):
         
         # general target proximity reward - exponential
         # reward += 0.03 * math.exp(-0.85 * target_dist)
-        # reward += -0.2 * target_dist
-        if prev_target_dist is not None and target_in_sight:
+        #reward += -0.2 * target_dist
+        if prev_target_dist is not None:
             target_dist_delta = prev_target_dist - target_dist
             reward += 0.1 * target_dist_delta
+
         
-        # exploration and separation rewards when target isn't in sight
+        # # exploration rewards when target isn't in sight
+        base_exp_rew = 1.2
         if not target_in_sight:
-            if prev_avg_dist_to_visited is not None:
-                delta_avg_dist = avg_dist_to_visited - prev_avg_dist_to_visited
-                normalized_delta = delta_avg_dist/self.env_width
-                reward += 0.25*normalized_delta
-            
             reward += 0.1*avg_dist_to_visited/self.env_width
-            reward += 0.1*avg_dist_to_agents/self.env_width
-            # re-exploration penalty (+ reward too ig)
+            # reward += 0.1*avg_dist_to_agents/self.env_width
             reward += -0.1 * (1 - nearest_visited_dist / self.visiteds_min_dist) # proportional, max = 0
+            
+            # flat exploration reward
+            # if not seen_target and nearest_visited_dist > self.visiteds_min_dist:
+            #     reward += base_exp_rew
                 
         # success reward
         if target_dist < self.success_range:
@@ -826,6 +826,7 @@ class MainEnv(ParallelEnv):
         if self.ticks_elapsed > self.max_episode_len:
             reward += -15.0
         
+        # TODO: maybe reward distance to average of visited points? rn only looks at nearest
         # TODO: informatino gain reward, either number of new cells explored or 
 #         visit_counts = np.array([...])  # flat list of visit frequencies to each cell
         # prob = visit_counts / visit_counts.sum()
