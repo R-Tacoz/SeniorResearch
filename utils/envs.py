@@ -811,7 +811,7 @@ class MainEnv(ParallelEnv):
         base_exp_rew = 1.2
         if not target_in_sight:
             reward += 0.1*avg_dist_to_visited/self.env_width
-            # reward += 0.1*avg_dist_to_agents/self.env_width
+            reward += 0.1*avg_dist_to_agents/self.env_width
             reward += -0.1 * (1 - nearest_visited_dist / self.visiteds_min_dist) # proportional, max = 0
             
             # flat exploration reward
