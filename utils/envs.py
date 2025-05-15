@@ -51,16 +51,17 @@ class MainEnv(ParallelEnv):
         self, 
         max_episode_len: float = float('inf'),
         num_robots: int = 3, 
+        num_obstacles: int = 6,
+        obstacle_size: tuple = (2,2),
         width: int = 20, 
         height: int = 20, 
         target_location: tuple | None = (8, 8), 
-        lidar_range: float = 5,
-        camera_range: float = 8,
+        lidar_range: float = 5.0,
+        camera_range: float = 5 * 2/3,
         communication_range: float = 8.2,
-        success_range: float = 1,
+        success_range: float = 0.7,
         render_mode: str | None = None, 
         seed: object = None, 
-        num_obstacles: int = 6,
         framerate: int = 10,
         first_init: bool = True,
         options: object = None,
@@ -76,14 +77,14 @@ class MainEnv(ParallelEnv):
         
         self.seed = seed
         self.num_obstacles: int = num_obstacles
-        self.obstacle_width: float = 1 # units are cells for now
-        self.obstacle_height: float = 1
+        self.obstacle_width: float = obstacle_size[0] # units are cells for now
+        self.obstacle_height: float = obstacle_size[1]
         
         self.target_location: coords_t = target_location
         self.randomize_target: bool = True if self.target_location is None else False
         
-        self.robot_width: float = 0.5
-        self.robot_height: float = 0.5
+        self.robot_width: float = 0.3
+        self.robot_height: float = 0.3
         self.lidar_range: float = lidar_range
         self.lidar_ray_count: int = LIDAR_RAY_COUNT
         self.camera_range: float = camera_range
@@ -464,16 +465,13 @@ class MainEnv(ParallelEnv):
             #self.agents = []
             self.active = False
             
-        info = {}
         for agent_id in self.agents:
             done = terminations[agent_id] or truncations[agent_id]
 
             if done:
-                info[agent_id] = {
-                    "episode_reward": self.episode_rewards[agent_id],
-                    "success": self.success_flags[agent_id],
-                    "episode_length": self.episode_lengths[agent_id]
-                }
+                infos[agent_id]["episode_reward"] = self.episode_rewards[agent_id]
+                infos[agent_id]["success"] = self.success_flags[agent_id]
+                infos[agent_id]["episode_length"] = self.episode_lengths[agent_id]
 
         move_time *= 1E3
         collision_time *= 1E3
@@ -487,7 +485,7 @@ class MainEnv(ParallelEnv):
 
         # print(f"m: {move_time:.3f} c: {collision_time:.3f} v: {visiteds_time:.3f} r: {reward_time:.4f} o: {obs_time:.4f}", end='\r')  
 
-        return observations, rewards, terminations, truncations, info
+        return observations, rewards, terminations, truncations, infos
 
     def get_observations(self, agent_id: id_t) -> tuple[np.ndarray, list]:
         heading = 0
@@ -733,7 +731,64 @@ class MainEnv(ParallelEnv):
         
         return idx, min_dist
     
-    def calc_reward(self, agent_id: id_t, coords: coords_t, attempted_collision: bool, target_dist: float, target_in_sight: bool, nearest_visited_dist: float, acceleration: float, dist_moved: float, prev_target_dist: float, seen_target: bool, avg_dist_to_visited: float, avg_dist_to_agents: float, prev_avg_dist_to_visited: float) -> float: 
+    def calc_reward(
+        self, 
+        agent_id: id_t, 
+        coords: coords_t, 
+        attempted_collision: bool, 
+        target_dist: float, 
+        target_in_sight: bool, 
+        nearest_visited_dist: float, 
+        acceleration: float, 
+        dist_moved: float, 
+        prev_target_dist: float, 
+        seen_target: bool, 
+        avg_dist_to_visited: float, 
+        avg_dist_to_agents: float, 
+        prev_avg_dist_to_visited: float
+    ) -> float: 
+        reward = 0.0
+        
+        # time penalty
+        # reward += -0.01
+        
+        # collision penalty
+        if attempted_collision:
+            reward += -0.2
+        
+        # acceleration penalty
+        reward += -0.075 * acceleration
+        
+        # general target proximity reward - exponential
+        # reward += 0.03 * math.exp(-0.85 * target_dist)
+        reward += -0.2 * target_dist
+        if prev_target_dist is not None:
+            target_dist_delta = prev_target_dist - target_dist
+        #     reward += 0.01 * target_dist_delta
+        
+        # # exploration rewards when target isn't in sight
+        base_exp_rew = 1.2
+        if not target_in_sight:
+            # re-exploration penalty (+ reward too ig)
+            reward += -0.1 * (1 - nearest_visited_dist / self.visiteds_min_dist) # proportional, max = 0
+            # reward += -0.3 * math.exp(2 * nearest_visited_dist) # exponential
+            # reward += -0.3 / (nearest_visited_dist + EPS_REWARD) # inversely proportional
+            
+            # flat exploration reward
+            if not seen_target and nearest_visited_dist > self.visiteds_min_dist:
+                reward += base_exp_rew
+                                
+            
+        # success reward
+        if target_dist < self.success_range:
+            reward += 15.0
+            
+        # failure penalty
+        if self.ticks_elapsed > self.max_episode_len:
+            reward += -15.0
+           
+            
+        return reward
         
         reward = 0.0
         

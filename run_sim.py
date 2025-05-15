@@ -43,21 +43,22 @@ def main():
     
     
     # Testing environment
-    # parallel_env = MainEnv(
-    #     num_robots=N_ROBOTS, 
-    #     width=18, 
-    #     height=18, 
-    #     num_obstacles=6,
-    #     target_location=None, 
-    #     lidar_range=5,
-    #     camera_range=8,
-    #     success_range=1,
-    #     framerate=FRAMERATE,
-    #     render_mode="human",
-    #     )
+    parallel_env = MainEnv(
+        num_robots=N_ROBOTS, 
+        width=18, 
+        height=18, 
+        num_obstacles=8,
+        obstacle_size=(2,2),
+        target_location=None, 
+        lidar_range=6,
+        camera_range=4,
+        success_range=1,
+        framerate=FRAMERATE,
+        render_mode="human",
+        )
     
     # parallel_env = SpiralEnv()
-    parallel_env = SquareHexEnv(width=20, height=20, square_length=3, gap_size=2)
+    # parallel_env = SquareHexEnv(width=20, height=20, square_length=3, gap_size=2)
 
     # Wrap the environment for compatibility with Stable-Baselines3
     # I use a custom ParallelEnv -> SB3 VecEnv bc supersuit vec_env is a gym VecEnv,
