@@ -42,10 +42,6 @@ def main():
         height=env_height, 
         num_obstacles=10,
         obstacle_size=(2,2),
-        target_location=None, 
-        lidar_range=6,
-        camera_range=4,
-        success_range=1,
         render_mode="human"
     )
     # env = SpiralEnv(max_episode_len=env_width*env_height*4)

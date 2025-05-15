@@ -48,9 +48,6 @@ def main():
     #     width = 18, 
     #     height = 18, 
     #     target_location = None, 
-    #     # lidar_range = 5,
-    #     camera_range = 8, 
-    #     success_range = 1,
     #     num_obstacles=8,        
     #     framerate=FRAMERATE, 
     #     render_mode='human'

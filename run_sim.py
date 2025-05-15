@@ -49,10 +49,6 @@ def main():
         height=18, 
         num_obstacles=8,
         obstacle_size=(2,2),
-        target_location=None, 
-        lidar_range=6,
-        camera_range=4,
-        success_range=1,
         framerate=FRAMERATE,
         render_mode="human",
         )
