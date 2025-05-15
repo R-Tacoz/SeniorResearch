@@ -76,8 +76,8 @@ class MainEnv(ParallelEnv):
         
         self.seed = seed
         self.num_obstacles: int = num_obstacles
-        self.obstacle_width: float = 3 # units are cells for now
-        self.obstacle_height: float = 3
+        self.obstacle_width: float = 1 # units are cells for now
+        self.obstacle_height: float = 1
         
         self.target_location: coords_t = target_location
         self.randomize_target: bool = True if self.target_location is None else False
@@ -155,6 +155,7 @@ class MainEnv(ParallelEnv):
         
         self.robot_target_sightlines: dict[id_t, np.ndarray | None] = {}
         self.prev_target_dists: dict[id_t, float | None] = {}
+        self.prev_avg_dist_to_visited = {id_: None for id_ in self.possible_agents}
         
         self.last_rewards: dict[id_t, float] = {}
         self.ep_tot_rewards: dict[id_t, float] = {}
@@ -187,6 +188,11 @@ class MainEnv(ParallelEnv):
         self.screen = None  
         self.clock = None  
         
+        #results trackers
+        self.episode_rewards = {id_: 0.0 for id_ in self.possible_agents}
+        self.episode_lengths = {id_: 0 for id_ in self.possible_agents}
+        self.success_flags = {id_: 0 for id_ in self.possible_agents}
+
         # force numba jit-compilation
         dummy = np.zeros(2, dtype=np.float64)
         # get_fov_mask_indices(dummy, 0., 0.)
@@ -262,19 +268,22 @@ class MainEnv(ParallelEnv):
         self.robot_box_corners = {}
         self.sparse_visited_coords = np.empty((0,2))
         self.robot_last_velocities = {}
+
+        coords = None
+        while True:
+            coords = self.get_random_coord(in_grid=False)
+            if not self.is_collision(coords): 
+                 break
+
+        point = np.array(coords)  
+
         for i, agent_id in enumerate(self.possible_agents):
-            coords = None
-            while True:
-                coords = self.get_random_coord(in_grid=False)
-                if not self.is_collision(coords): 
-                    break
-                
-            point = np.array(coords)
+            self.sparse_visited_coords = np.append(self.sparse_visited_coords, [point], axis=0)
+
             self.robot_positions[agent_id] = point
             self.robot_box_centers[agent_id] = point
             self.robot_box_corners[agent_id] = point + corners_template
             
-            self.sparse_visited_coords = np.append(self.sparse_visited_coords, [point], axis=0)
             self.robot_last_velocities[agent_id] = (0,0)
             self.robot_nearest_visited_idx[agent_id] = i
             self.robot_last_visited_idx[agent_id] = i
@@ -291,8 +300,14 @@ class MainEnv(ParallelEnv):
         
         
         self.prev_target_dists = {id_:None for id_ in self.agents}
+        self.prev_avg_dist_to_visited = {id_: None for id_ in self.possible_agents}
         self.last_rewards = {id_:0 for id_ in self.agents}
         self.ep_tot_rewards = {id_:0 for id_ in self.agents}
+
+        #results trackers
+        self.episode_rewards = {id_: 0.0 for id_ in self.possible_agents}
+        self.episode_lengths = {id_: 0 for id_ in self.possible_agents}
+        self.success_flags = {id_: 0 for id_ in self.possible_agents}
 
         # create observations and info to return
         observations = {id: self.get_observations(id)[0] for id in self.agents}
@@ -321,8 +336,8 @@ class MainEnv(ParallelEnv):
         rewards = {a: 0 for a in self.agents}
         terminations = {a: False for a in self.agents}
         truncations = {a: False for a in self.agents}
-        info = {a: {} for a in self.agents}
-
+        infos = {agent_id: {} for agent_id in self.agents}
+        
         move_time = 0
         collision_time = 0
         visiteds_time = 0
@@ -404,12 +419,18 @@ class MainEnv(ParallelEnv):
             
             obs_time += (t1:=time.perf_counter()) - t0
             
+            avg_distance_to_visited = self.avg_dist_to_visited(self.robot_positions[agent_id])
+            prev_avg_dist = self.prev_avg_dist_to_visited[agent_id]
+            self.prev_avg_dist_to_visited[agent_id] = avg_distance_to_visited
+
+            avg_distance_to_agents = self.avg_dist_to_agents(agent_id)
+
             # calculate reward
             rewards[agent_id] = self.calc_reward(
                 agent_id, new_s, attempted_collision, target_dist, 
                 target_in_sight, dist_to_closest_visited, acceleration, 
-                dist_moved, self.prev_target_dists[agent_id],
-                self.robot_seen_target[agent_id])
+                dist_moved, self.prev_target_dists[agent_id], self.robot_seen_target[agent_id],
+                avg_distance_to_visited, avg_distance_to_agents, prev_avg_dist)
             
             if target_in_sight:
                 self.prev_target_dists[agent_id] = target_dist
@@ -417,26 +438,43 @@ class MainEnv(ParallelEnv):
                 self.prev_target_dists[agent_id] = None
             
             reward_time += (t0:=time.perf_counter()) - t1
-      
+
+            self.episode_rewards[agent_id] += rewards[agent_id]
+            self.episode_lengths[agent_id] += 1
+
+            # Set success flag if target found
+            if target_dist < self.success_range:
+                self.success_flags[agent_id] = 1    
+
             # check if target is found (the robot has to drive to it)
             if target_dist < self.success_range and self.active:
                 # terminate all agents if any one found the target
                 # teamwork makes the dream work
                 terminations = {a: True for a in self.agents}
                 # print("terminating")
-                self.agents = []
+                # self.agents = []
                 self.active=False
-                # break
-                
+                # break  
         self.last_rewards = rewards
         for id_ in self.ep_tot_rewards:
             self.ep_tot_rewards[id_] += self.last_rewards[id_]
-        
+
         if self.ticks_elapsed > self.max_episode_len and self.active:
             terminations = {a: True for a in self.agents}
-            self.agents = []
+            #self.agents = []
             self.active = False
             
+        info = {}
+        for agent_id in self.agents:
+            done = terminations[agent_id] or truncations[agent_id]
+
+            if done:
+                info[agent_id] = {
+                    "episode_reward": self.episode_rewards[agent_id],
+                    "success": self.success_flags[agent_id],
+                    "episode_length": self.episode_lengths[agent_id]
+                }
+
         move_time *= 1E3
         collision_time *= 1E3
         visiteds_time *= 1E3
@@ -666,6 +704,28 @@ class MainEnv(ParallelEnv):
             
         return False
     
+    def avg_dist_to_agents(self, agent_id: id_t) -> float:
+        agent_pos = self.robot_positions[agent_id]
+        other_positions = [pos for aid, pos in self.robot_positions.items() if aid != agent_id]
+    
+        if len(other_positions) == 0:
+            return 0.0
+
+        other_positions = np.array(other_positions)
+        dists = np.linalg.norm(other_positions - agent_pos, axis=-1)
+        avg_dist = np.mean(dists)
+
+        return avg_dist
+
+    def avg_dist_to_visited(self, coords) -> float:
+        if len(self.sparse_visited_coords) == 0:
+            return 0.0  # No visited positions yet
+    
+        dists = np.linalg.norm(self.sparse_visited_coords - coords, axis=-1)
+        avg_dist = np.mean(dists)
+    
+        return avg_dist
+
     def nearest_visited(self, coords) -> tuple:
         dists = np.linalg.norm(self.sparse_visited_coords - coords, axis=-1)
         idx = np.argmin(dists, axis=0)
@@ -673,81 +733,35 @@ class MainEnv(ParallelEnv):
         
         return idx, min_dist
     
-    def calc_reward(
-        self, 
-        agent_id: id_t, 
-        coords: coords_t, 
-        attempted_collision: bool, 
-        target_dist: float, 
-        target_in_sight: bool,
-        nearest_visited_dist: float,
-        acceleration: float,
-        dist_moved: float,
-        prev_target_dist: float,
-        seen_target: bool
-    ) -> float: 
+    def calc_reward(self, agent_id: id_t, coords: coords_t, attempted_collision: bool, target_dist: float, target_in_sight: bool, nearest_visited_dist: float, acceleration: float, dist_moved: float, prev_target_dist: float, seen_target: bool, avg_dist_to_visited: float, avg_dist_to_agents: float, prev_avg_dist_to_visited: float) -> float: 
         
         reward = 0.0
         
         # time penalty
-        # reward += -0.01
+        reward += -0.01
         
         # collision penalty
         if attempted_collision:
             reward += -0.2
-            
-        # velocity reward
-        # if dist_moved > 0.1:
-        #     reward += 0.5
-        
-        # acceleration penalty
-        reward += -0.075 * acceleration
         
         # general target proximity reward - exponential
         # reward += 0.03 * math.exp(-0.85 * target_dist)
-        reward += -0.2 * target_dist
-        if prev_target_dist is not None:
+        # reward += -0.2 * target_dist
+        if prev_target_dist is not None and target_in_sight:
             target_dist_delta = prev_target_dist - target_dist
-        #     reward += 0.01 * target_dist_delta
+            reward += 0.1 * target_dist_delta
         
-        # # exploration rewards when target isn't in sight
-        base_exp_rew = 1.2
+        # exploration and separation rewards when target isn't in sight
         if not target_in_sight:
+            if prev_avg_dist_to_visited is not None:
+                delta_avg_dist = avg_dist_to_visited - prev_avg_dist_to_visited
+                normalized_delta = delta_avg_dist/self.env_width
+                reward += 0.25*normalized_delta
+            
+            reward += 0.1*avg_dist_to_visited/self.env_width
+            reward += 0.1*avg_dist_to_agents/self.env_width
             # re-exploration penalty (+ reward too ig)
             reward += -0.1 * (1 - nearest_visited_dist / self.visiteds_min_dist) # proportional, max = 0
-            # reward += -0.3 * math.exp(2 * nearest_visited_dist) # exponential
-            # reward += -0.3 / (nearest_visited_dist + EPS_REWARD) # inversely proportional
-            
-            # flat exploration reward
-            if not seen_target and nearest_visited_dist > self.visiteds_min_dist:
-                reward += base_exp_rew
-                                
-            
-            
-        # target in sight rewards
-        # else:
-        #     # match and maximize all exploration rewards
-        #     # re-exploration penalty max
-        #     reward += 0.0
-            
-        #     # flat exploration reward max
-        #     reward += base_exp_rew
-            
-        #     # total exploration 90% max
-        #     # reward += 0.04 * 0.9 * self.approx_visiteds_capacity
-            
-        #     # target proximity reward
-        #     eps_tpr = 1.5 # 0.66 max
-        #     # reward += 1 / (target_dist + eps_tpr) # 0.66 max, 
-            
-        #     if prev_target_dist is not None:
-        #         # target security progress reward
-        #         reward += 1.0 * target_dist_delta
-                
-        #         # target loiter penalty - tailored to negate all unconditional target-in-sight rewards in zero progress
-        #         tlp_coef = 0.3
-        #         tdd_clipped = max(target_dist_delta, -tlp_coef/base_exp_rew + 5e-2)
-        #         reward += -tlp_coef / (tdd_clipped + tlp_coef/base_exp_rew)
                 
         # success reward
         if target_dist < self.success_range:
@@ -757,7 +771,6 @@ class MainEnv(ParallelEnv):
         if self.ticks_elapsed > self.max_episode_len:
             reward += -15.0
         
-        # TODO: maybe reward distance to average of visited points? rn only looks at nearest
         # TODO: informatino gain reward, either number of new cells explored or 
 #         visit_counts = np.array([...])  # flat list of visit frequencies to each cell
         # prob = visit_counts / visit_counts.sum()
