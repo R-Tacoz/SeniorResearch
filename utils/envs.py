@@ -17,6 +17,7 @@ from shapely.geometry import LineString, Point, box, Polygon
 from shapely import Geometry
 from scipy.spatial import distance, KDTree
 from utils.agents import RandomAgent, MLPAgent, ConvAgent
+from utils.message_encoder import MessageEncoder
 
 # TODO: eventually move all coords_t usages to np.ndarray
 coords_t = tuple[float, float]
@@ -51,17 +52,16 @@ class MainEnv(ParallelEnv):
         self, 
         max_episode_len: float = float('inf'),
         num_robots: int = 3, 
-        num_obstacles: int = 6,
-        obstacle_size: tuple = (2,2),
-        width: int = 18, 
-        height: int = 18, 
-        target_location: tuple | None = None, 
-        lidar_range: float = 5.0,
-        camera_range: float = 5.0 * 2.0/3,
-        communication_range: float = 7,
-        success_range: float = 0.7,
+        width: int = 20, 
+        height: int = 20, 
+        target_location: tuple | None = (8, 8), 
+        lidar_range: float = 5,
+        camera_range: float = 8,
+        communication_range: float = 8.2,
+        success_range: float = 1,
         render_mode: str | None = None, 
         seed: object = None, 
+        num_obstacles: int = 6,
         framerate: int = 10,
         first_init: bool = True,
         options: object = None,
@@ -77,22 +77,22 @@ class MainEnv(ParallelEnv):
         
         self.seed = seed
         self.num_obstacles: int = num_obstacles
-        self.obstacle_width: float = obstacle_size[0] # units are cells for now
-        self.obstacle_height: float = obstacle_size[1]
+        self.obstacle_width: float = 1 # units are cells for now
+        self.obstacle_height: float = 1
         
         self.target_location: coords_t = target_location
         self.randomize_target: bool = True if self.target_location is None else False
         
-        self.robot_width: float = 0.3
-        self.robot_height: float = 0.3
+        self.robot_width: float = 0.5
+        self.robot_height: float = 0.5
         self.lidar_range: float = lidar_range
         self.lidar_ray_count: int = LIDAR_RAY_COUNT
         self.camera_range: float = camera_range
-        self.communication_range: float = communication_range
         self.success_range: float = success_range
+        self.communication_range: float = communication_range
         
         self.options = options
-        
+
         # simulation environment data
         # TODO:
         self.env_box = box(0,0,self.env_width, self.env_height)
@@ -134,8 +134,8 @@ class MainEnv(ParallelEnv):
         
         self.robot_observation_space = Box(
             low=0., high=self.lidar_range, 
-            # rays, target detection, last velo, nearest visited, last visited
-            shape=(self.lidar_ray_count + 4 + 2 + 2 + 2,),
+            # rays, target detection, last velo, nearest visited, last visited, encoded aggregate message
+            shape=(self.lidar_ray_count + 4 + 2 + 2 + 2 + 4,),
             dtype=np.float32
             )
         
@@ -145,6 +145,14 @@ class MainEnv(ParallelEnv):
             shape=(2,), dtype=np.float32
             )
         
+        #communication stuff
+        self.message_dim = 4
+        self.encoder_input_dim = self.robot_observation_space.shape[0]
+        self.message_encoder = MessageEncoder(self.encoder_input_dim, self.message_dim)
+        self.agent_messages = {id_: np.zeros(self.message_dim, dtype=np.float32) for id_ in self.possible_agents}
+        print(self.encoder_input_dim)
+
+
         self.lidar_ray_indices = np.arange(self.lidar_ray_count)
         self.lidar_angles = np.linspace(-np.pi, np.pi, self.lidar_ray_count)
         self.lidar_ray_directions = np.stack((np.cos(self.lidar_angles), np.sin(self.lidar_angles)), axis=-1)
@@ -310,6 +318,9 @@ class MainEnv(ParallelEnv):
         self.episode_lengths = {id_: 0 for id_ in self.possible_agents}
         self.success_flags = {id_: 0 for id_ in self.possible_agents}
 
+        #communication stuff
+        self.encoder_input_dim = self.robot_observation_space.shape[0]
+        self.agent_messages = {id_: np.zeros(self.message_dim, dtype=np.float32) for id_ in self.possible_agents}
         # create observations and info to return
         observations = {id: self.get_observations(id)[0] for id in self.agents}
         self.obs_r = observations
@@ -337,7 +348,7 @@ class MainEnv(ParallelEnv):
         rewards = {a: 0 for a in self.agents}
         terminations = {a: False for a in self.agents}
         truncations = {a: False for a in self.agents}
-        infos = {agent_id: {} for agent_id in self.agents}
+        info = {agent_id: {} for agent_id in self.agents}
         
         move_time = 0
         collision_time = 0
@@ -409,6 +420,8 @@ class MainEnv(ParallelEnv):
                      
             # get observations     
             observations[agent_id], obs_data = self.get_observations(agent_id)
+
+            
             
             target_dist, target_in_sight = obs_data
             
@@ -453,31 +466,59 @@ class MainEnv(ParallelEnv):
                 # teamwork makes the dream work
                 terminations = {a: True for a in self.agents}
                 # print("terminating")
-                # self.agents = []
                 self.active=False
-                # break  
+                # break
+
         self.last_rewards = rewards
         for id_ in self.ep_tot_rewards:
             self.ep_tot_rewards[id_] += self.last_rewards[id_]
 
         if self.ticks_elapsed > self.max_episode_len and self.active:
             terminations = {a: True for a in self.agents}
-            #self.agents = []
             self.active = False
             
+        #info for callback tracker
         for agent_id in self.agents:
             done = terminations[agent_id] or truncations[agent_id]
 
             if done:
-                infos[agent_id]["episode_reward"] = self.episode_rewards[agent_id]
-                infos[agent_id]["success"] = self.success_flags[agent_id]
-                infos[agent_id]["episode_length"] = self.episode_lengths[agent_id]
+                info[agent_id] = {
+                    "episode_reward": self.episode_rewards[agent_id],
+                    "success": self.success_flags[agent_id],
+                    "episode_length": self.episode_lengths[agent_id]
+                }
 
-        move_time *= 1E3
-        collision_time *= 1E3
-        visiteds_time *= 1E3
-        reward_time *= 1E3
-        obs_time *= 1E3
+        #messages between agents
+
+        for agent_id in self.agents:
+            base_obs = observations[agent_id][:-1]
+
+            # Convert to torch tensor and encode message
+            obs_tensor = torch.tensor(base_obs, dtype=torch.float32)
+            print(obs_tensor.shape)
+            message = self.message_encoder(obs_tensor).detach().numpy()  # detach since env isn't differentiable
+
+            self.agent_messages[agent_id] = message
+
+        for agent_id in self.agents:
+            agent_pos = self.robot_positions[agent_id]
+            neighbors = [
+            other_id for other_id, other_pos in self.robot_positions.items()
+            if other_id != agent_id and np.linalg.norm(agent_pos - other_pos) < self.communication_range
+            ]
+
+            if neighbors:
+                neighbor_messages = [self.agent_messages[other_id] for other_id in neighbors]
+                aggregated_message = np.mean(neighbor_messages, axis=0)
+            else:
+                aggregated_message = np.zeros(self.message_dim, dtype=np.float32)
+
+            observations[agent_id][5] = aggregated_message
+        # move_time *= 1E3
+        # collision_time *= 1E3
+        # visiteds_time *= 1E3
+        # reward_time *= 1E3
+        # obs_time *= 1E3
         
         # print("env_step")
         # print(terminations)
@@ -485,7 +526,7 @@ class MainEnv(ParallelEnv):
 
         # print(f"m: {move_time:.3f} c: {collision_time:.3f} v: {visiteds_time:.3f} r: {reward_time:.4f} o: {obs_time:.4f}", end='\r')  
 
-        return observations, rewards, terminations, truncations, infos
+        return observations, rewards, terminations, truncations, info
 
     def get_observations(self, agent_id: id_t) -> tuple[np.ndarray, list]:
         heading = 0
@@ -571,12 +612,13 @@ class MainEnv(ParallelEnv):
                 last_velocity, 
                 nearest_visited_disp,
                 last_visited_disp,
+                np.zeros(self.message_dim, dtype=np.float32)
             ], 
             axis=0,
         )
         
         return observations, data
-
+    
     def get_random_coord(self, in_grid=True) -> tuple:
         if in_grid:
             return (np.random.randint(self.env_width), 
@@ -731,64 +773,7 @@ class MainEnv(ParallelEnv):
         
         return idx, min_dist
     
-    def calc_reward(
-        self, 
-        agent_id: id_t, 
-        coords: coords_t, 
-        attempted_collision: bool, 
-        target_dist: float, 
-        target_in_sight: bool, 
-        nearest_visited_dist: float, 
-        acceleration: float, 
-        dist_moved: float, 
-        prev_target_dist: float, 
-        seen_target: bool, 
-        avg_dist_to_visited: float, 
-        avg_dist_to_agents: float, 
-        prev_avg_dist_to_visited: float
-    ) -> float: 
-        reward = 0.0
-        
-        # time penalty
-        # reward += -0.01
-        
-        # collision penalty
-        if attempted_collision:
-            reward += -0.2
-        
-        # acceleration penalty
-        reward += -0.075 * acceleration
-        
-        # general target proximity reward - exponential
-        # reward += 0.03 * math.exp(-0.85 * target_dist)
-        reward += -0.2 * target_dist
-        if prev_target_dist is not None:
-            target_dist_delta = prev_target_dist - target_dist
-        #     reward += 0.01 * target_dist_delta
-        
-        # # exploration rewards when target isn't in sight
-        base_exp_rew = 1.2
-        if not target_in_sight:
-            # re-exploration penalty (+ reward too ig)
-            reward += -0.1 * (1 - nearest_visited_dist / self.visiteds_min_dist) # proportional, max = 0
-            # reward += -0.3 * math.exp(2 * nearest_visited_dist) # exponential
-            # reward += -0.3 / (nearest_visited_dist + EPS_REWARD) # inversely proportional
-            
-            # flat exploration reward
-            if not seen_target and nearest_visited_dist > self.visiteds_min_dist:
-                reward += base_exp_rew
-                                
-            
-        # success reward
-        if target_dist < self.success_range:
-            reward += 15.0
-            
-        # failure penalty
-        if self.ticks_elapsed > self.max_episode_len:
-            reward += -15.0
-           
-            
-        return reward
+    def calc_reward(self, agent_id: id_t, coords: coords_t, attempted_collision: bool, target_dist: float, target_in_sight: bool, nearest_visited_dist: float, acceleration: float, dist_moved: float, prev_target_dist: float, seen_target: bool, avg_dist_to_visited: float, avg_dist_to_agents: float, prev_avg_dist_to_visited: float) -> float: 
         
         reward = 0.0
         
