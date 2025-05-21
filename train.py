@@ -8,13 +8,13 @@ from stable_baselines3.common.utils import get_linear_fn
 from torch import nn
 
 from utils.envs import MainEnv, SpiralEnv, SquareHexEnv
-from utils.agents import AgentCNN
+from utils.agents import AgentCNN, AgentGNN
 from utils.callbacks import TrainingMetricsCallback
 
-# === Hyperparameters ===
+#%% Hyperparameters
 NUM_ENVS = 4  # Tune based on CPU
-TOTAL_TIMESTEPS = 750_000
-STEPS_PER_CHECKPOINT = 10_000
+TOTAL_TIMESTEPS = 1_000_000
+STEPS_PER_CHECKPOINT = 20_000
 
 # LOAD_ROOT = "./saved_runs/run30"
 # MODEL_LOAD_PATH = LOAD_ROOT + "/conv1mlp2-final.zip"
@@ -23,14 +23,15 @@ LOAD_ROOT = None
 MODEL_LOAD_PATH = None
 ENV_LOAD_PATH = None
 
-SAVE_ROOT = "./saved_runs/rz1"
-MODEL_NAME = "conv1mlp3" # name to save models with
+SAVE_ROOT = "./saved_runs/rz2"
+MODEL_NAME = "conv1mlp2" # name to save models with
 MODEL_SAVE_PATH = SAVE_ROOT + "/checkpoints"
 ENV_SAVE_PATH = SAVE_ROOT + "/vecnormenv_state-final.pkl" # won't work if you add directories between the file and the root
 TENSORBOARD_LOG_PATH = SAVE_ROOT
 
-
 def main():
+    
+#%% Environment
     
     env_width = 18
     env_height = 18
@@ -41,7 +42,7 @@ def main():
         width=env_width, 
         height=env_height, 
         num_obstacles=10,
-        obstacle_size=(2,2),
+        obstacle_size=(1.5,1.5),
         render_mode="human"
     )
     # env = SpiralEnv(max_episode_len=env_width*env_height*4)
@@ -51,6 +52,8 @@ def main():
     #     square_length=None, 
     #     gap_size=None,
     # )
+    
+    comm_range = env.communication_range
     
     env = ss.pettingzoo_env_to_vec_env_v1(env)
     env = ss.concat_vec_envs_v1(env, num_vec_envs=NUM_ENVS, base_class="stable_baselines3")
@@ -68,16 +71,32 @@ def main():
 
     # Optional: Track rewards and lengths per episode
     env = VecMonitor(env)
+    
+#%% Agent Policy
 
-    # === Setup PPO Agent ===
+    # policy_kwargs = dict(
+    #     features_extractor_class=AgentCNN,
+    #     features_extractor_kwargs=dict(
+    #         features_dim=128,
+    #     ),
+    #     net_arch=[128,64],
+    #     activation_fn=nn.ReLU,
+    # ) 
+    
     policy_kwargs = dict(
-        features_extractor_class=AgentCNN,
+        features_extractor_class=AgentGNN,
         features_extractor_kwargs=dict(
             features_dim=128,
+            n_conv_features = 32,
+            message_size = 64,
+            lidar_rays_count = 90,
+            communication_range = comm_range,
         ),
-        net_arch=[128,128,64],#[256, 256, 256, 128],
+        net_arch=[128,64],
         activation_fn=nn.ReLU,
     ) 
+
+#%% Training
     
     lr_scheduler = get_linear_fn(start=1e-3, end=5e-5, end_fraction=0.7)
     
@@ -138,6 +157,7 @@ def main():
 
     metrics_callback.plot_metrics()
 
+#%% Saving
     # === Save Final Model and Normalization Stats ===
     model.save(os.path.join(SAVE_ROOT, MODEL_NAME + "-final"))
     
@@ -152,5 +172,5 @@ def main():
     
     print("Done.")
 
-
+#%% Main
 if __name__=="__main__": main()

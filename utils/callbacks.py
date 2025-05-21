@@ -38,6 +38,8 @@ class TrainingMetricsCallback(BaseCallback):
         return True
 
     def plot_metrics(self):
+        print("Plotting Metrics...\r")
+        
         episodes = range(len(self.episode_rewards))
         window_size = 100
 

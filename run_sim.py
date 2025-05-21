@@ -14,7 +14,7 @@ from pettingzoo.test import parallel_api_test
 from utils.envs import MainEnv, SinglePettingZooVecEnv, SpiralEnv, SquareHexEnv
 from pynput import keyboard
 
-LOAD_ROOT = "./saved_runs/curric1/5hex2_1-0"
+LOAD_ROOT = "./saved_runs/rz1"
 MODEL_PATH = LOAD_ROOT + "/conv1mlp2-final"
 # MODEL_PATH = LOAD_ROOT + "/checkpoints/conv1mlp2_360000_steps"
 ENV_PATH = LOAD_ROOT + "/vecnormenv_state-final.pkl"
@@ -47,8 +47,8 @@ def main():
         num_robots=N_ROBOTS, 
         width=18, 
         height=18, 
-        num_obstacles=8,
-        obstacle_size=(2,2),
+        num_obstacles=10,
+        obstacle_size=(1.5,1.5),
         framerate=FRAMERATE,
         render_mode="human",
         )
@@ -77,6 +77,8 @@ def main():
     model = PPO.load(MODEL_PATH, device='cpu')
     #print(env.reset())
     obs = vec_env.reset()
+    
+    print("Starting")
 
     for _ in range(5000):
         actions, _ = model.predict(obs)

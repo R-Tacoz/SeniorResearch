@@ -4,7 +4,7 @@ import numpy as np
 from utils.envs import MainEnv, SpiralEnv, SquareHexEnv
 from pynput import keyboard
 
-FRAMERATE = 10 # also equals tickrate
+FRAMERATE = 20 # also equals tickrate
 SIM_LENGTH = 100000 # frames/ticks
 MAX_VELO = 4 # cells / s
 MAX_DISP = 2
@@ -37,21 +37,21 @@ def main():
     np.set_printoptions(linewidth=200)
     
     # env = SpiralEnv(framerate=FRAMERATE)
-    env = SquareHexEnv(
-        square_length=None,
-        gap_size=None,
-    )
-    n_robots = 1
-    # env = MainEnv(
-    #     # max_episode_len=600,
-    #     num_robots = n_robots, 
-    #     width = 18, 
-    #     height = 18, 
-    #     target_location = None, 
-    #     num_obstacles=8,        
-    #     framerate=FRAMERATE, 
-    #     render_mode='human'
+    # env = SquareHexEnv(
+    #     square_length=None,
+    #     gap_size=None,
     # )
+    n_robots = 3
+    env = MainEnv(
+        # max_episode_len=600,
+        num_robots = n_robots, 
+        width = 18, 
+        height = 18, 
+        target_location = None, 
+        num_obstacles=16,        
+        framerate=FRAMERATE, 
+        render_mode='human'
+    )
     
     t0 = time.perf_counter()
     # for _ in range(SIM_LENGTH):
@@ -67,7 +67,7 @@ def main():
         
         actions = {
             robot: velo_command 
-            if i == n_robots-1 else np.zeros((2,), dtype=np.float64) 
+            # if i == n_robots-1 else np.zeros((2,), dtype=np.float64) 
             for i,robot in enumerate(env.agents)
         }
         obs, rewards, terms, truncs, info = env.step(actions)

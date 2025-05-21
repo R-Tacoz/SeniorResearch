@@ -47,7 +47,7 @@ class MainEnv(ParallelEnv):
     resets_i = 0
     obs_r = None
 
-    def __init__(
+    def __init__( 
         self, 
         max_episode_len: float = float('inf'),
         num_robots: int = 3, 
@@ -56,10 +56,10 @@ class MainEnv(ParallelEnv):
         width: int = 18, 
         height: int = 18, 
         target_location: tuple | None = None, 
-        lidar_range: float = 5.0,
-        camera_range: float = 5.0 * 2.0/3,
+        lidar_range: float = 6.0,
+        camera_range: float = 6.0 * 2.0/3,
         communication_range: float = 7,
-        success_range: float = 0.7,
+        success_range: float = 1.0,
         render_mode: str | None = None, 
         seed: object = None, 
         framerate: int = 10,
@@ -83,8 +83,8 @@ class MainEnv(ParallelEnv):
         self.target_location: coords_t = target_location
         self.randomize_target: bool = True if self.target_location is None else False
         
-        self.robot_width: float = 0.3
-        self.robot_height: float = 0.3
+        self.robot_width: float = 0.5
+        self.robot_height: float = 0.5
         self.lidar_range: float = lidar_range
         self.lidar_ray_count: int = LIDAR_RAY_COUNT
         self.camera_range: float = camera_range
@@ -98,6 +98,7 @@ class MainEnv(ParallelEnv):
         self.env_box = box(0,0,self.env_width, self.env_height)
         
         self.env_dims = np.array([self.env_width, self.env_height])
+        self.env_diag = np.linalg.norm(self.env_dims)
         self.env_bounds_pad = np.array([BOUNDS_PAD, BOUNDS_PAD])
         self.env_boundary_vecs = [ # (start_point, edge_vec)
             (np.array([0,0]), np.array([self.env_width, 0])),
@@ -135,7 +136,7 @@ class MainEnv(ParallelEnv):
         self.robot_observation_space = Box(
             low=0., high=self.lidar_range, 
             # rays, target detection, last velo, nearest visited, last visited
-            shape=(self.lidar_ray_count + 4 + 2 + 2 + 2,),
+            shape=(self.lidar_ray_count + 4 + 2 + 2 + 2 + 2,),
             dtype=np.float32
             )
         
@@ -270,20 +271,27 @@ class MainEnv(ParallelEnv):
         self.sparse_visited_coords = np.empty((0,2))
         self.robot_last_velocities = {}
 
-        coords = None
+        init_center = None
         while True:
-            coords = self.get_random_coord(in_grid=False)
-            if not self.is_collision(coords): 
+            init_center = self.get_random_coord(in_grid=False)
+            if not self.is_collision(init_center): 
                  break
 
-        point = np.array(coords)  
+        init_center = np.array(init_center)  
 
         for i, agent_id in enumerate(self.possible_agents):
-            self.sparse_visited_coords = np.append(self.sparse_visited_coords, [point], axis=0)
+            while True:
+                offset = 2*self.approx_robot_box_radius * np.random.random() - \
+                    self.approx_robot_box_radius
+                init_pos = init_center + offset
+                if not self.is_collision(init_pos, incl_agents=False):
+                    break
+            
+            self.sparse_visited_coords = np.append(self.sparse_visited_coords, [init_pos], axis=0)
 
-            self.robot_positions[agent_id] = point
-            self.robot_box_centers[agent_id] = point
-            self.robot_box_corners[agent_id] = point + corners_template
+            self.robot_positions[agent_id] = init_pos
+            self.robot_box_centers[agent_id] = init_pos
+            self.robot_box_corners[agent_id] = init_pos + corners_template
             
             self.robot_last_velocities[agent_id] = (0,0)
             self.robot_nearest_visited_idx[agent_id] = i
@@ -492,7 +500,6 @@ class MainEnv(ParallelEnv):
         coords = self.robot_positions[agent_id]
         
         # LiDAR scan
-        # TODO: test scanning every few ticks
         # nearby_obstacles_indices = self.obstacle_tree.query_ball_point(
         #     coords, self.lidar_range + self.approx_obs_radius)
         
@@ -536,8 +543,6 @@ class MainEnv(ParallelEnv):
                 camera_detection[1] = 1
                 camera_detection[1] = sightline[0] / self.camera_range
                 camera_detection[2] = sightline[1] / self.camera_range
-                # camera_detection[1] = target_dist / self.camera_range
-                # camera_detection[2] = target_heading / math.pi
             
             # break sight when an obstacle blocks view
             else:
@@ -566,11 +571,12 @@ class MainEnv(ParallelEnv):
         data = [target_dist, in_sight] # extra data for reward calculation 
         observations = np.concatenate(
             [
-                lidar_scan, 
+                lidar_scan,
                 camera_detection, 
                 last_velocity, 
                 nearest_visited_disp,
                 last_visited_disp,
+                coords / self.env_dims,
             ], 
             axis=0,
         )
@@ -652,6 +658,7 @@ class MainEnv(ParallelEnv):
         coords: coords_t=None,
         agent_id: str=None,
         shape: Geometry=None, # lets you pass in a Polygon
+        incl_agents: bool=True,
     ) -> bool:
         """Checks if a point or an agent collides with an obstacle or an agent
 
@@ -663,8 +670,8 @@ class MainEnv(ParallelEnv):
         Returns:
             bool:
         """
-        if shape is None:
-            shape = Point(*coords)
+        # if shape is None:
+        #     shape = Point(*coords)
 
         if coords is None:
             coords = (shape.x, shape.y)
@@ -690,15 +697,16 @@ class MainEnv(ParallelEnv):
             ):
                 return True
             
-        for id_, corners in self.robot_box_corners.items():
-            tl = corners[0]
-            br = corners[2]
-            if id_ != agent_id:
-                if (
-                    tl[0] <= coords[0] <= br[0] and
-                    tl[1] <= coords[1] <= br[1]
-                ):
-                    return True
+        if incl_agents:
+            for id_, corners in self.robot_box_corners.items():
+                tl = corners[0]
+                br = corners[2]
+                if id_ != agent_id:
+                    if (
+                        tl[0] <= coords[0] <= br[0] and
+                        tl[1] <= coords[1] <= br[1]
+                    ):
+                        return True
             
         return False
     
@@ -761,10 +769,10 @@ class MainEnv(ParallelEnv):
         
         # general target proximity reward - exponential
         # reward += 0.03 * math.exp(-0.85 * target_dist)
-        reward += -0.2 * target_dist
+        reward += -0.05 * target_dist
         if prev_target_dist is not None:
             target_dist_delta = prev_target_dist - target_dist
-        #     reward += 0.01 * target_dist_delta
+            reward += 0.1 * target_dist_delta
         
         # # exploration rewards when target isn't in sight
         base_exp_rew = 1.2
@@ -773,6 +781,10 @@ class MainEnv(ParallelEnv):
             reward += -0.1 * (1 - nearest_visited_dist / self.visiteds_min_dist) # proportional, max = 0
             # reward += -0.3 * math.exp(2 * nearest_visited_dist) # exponential
             # reward += -0.3 / (nearest_visited_dist + EPS_REWARD) # inversely proportional
+            
+            # spread penalties
+            reward += -0.08 * (1 - avg_dist_to_visited / self.env_diag)
+            reward += -0.1 * (1 - avg_dist_to_agents / self.env_diag)
             
             # flat exploration reward
             if not seen_target and nearest_visited_dist > self.visiteds_min_dist:
@@ -786,45 +798,7 @@ class MainEnv(ParallelEnv):
         # failure penalty
         if self.ticks_elapsed > self.max_episode_len:
             reward += -15.0
-           
-            
-        return reward
         
-        reward = 0.0
-        
-        #time penalty
-        reward += -0.01
-        
-        # collision penalty
-        if attempted_collision:
-            reward += -0.2
-        
-        # general target proximity reward - exponential
-        # reward += 0.03 * math.exp(-0.85 * target_dist)
-        #reward += -0.2 * target_dist
-        if prev_target_dist is not None:
-            target_dist_delta = prev_target_dist - target_dist
-            reward += 0.1 * target_dist_delta
-
-        
-        # # exploration rewards when target isn't in sight
-        base_exp_rew = 1.2
-        if not target_in_sight:
-            reward += 0.1*avg_dist_to_visited/self.env_width
-            reward += 0.1*avg_dist_to_agents/self.env_width
-            reward += -0.1 * (1 - nearest_visited_dist / self.visiteds_min_dist) # proportional, max = 0
-            
-            # flat exploration reward
-            # if not seen_target and nearest_visited_dist > self.visiteds_min_dist:
-            #     reward += base_exp_rew
-                
-        # success reward
-        if target_dist < self.success_range:
-            reward += 15.0
-            
-        # failure penalty
-        if self.ticks_elapsed > self.max_episode_len:
-            reward += -15.0
         
         # TODO: maybe reward distance to average of visited points? rn only looks at nearest
         # TODO: informatino gain reward, either number of new cells explored or 
@@ -1297,6 +1271,29 @@ class SquareHexEnv(MainEnv):
         
         return observations, info
         
+class RandomizerEnv(ParallelEnv):
+    
+    def __init__(
+        self,
+        envs: tuple[ParallelEnv] = (MainEnv,),
+        env_probs: tuple[float] = (1.0,),
+    ):
+        super().__init__()
+        
+        self.envs = envs
+        self.probs = env_probs
+        self.env = None
+        
+        self.reset()
+        
+    def reset(self, seed = None, options = None):
+        rand = np.random.random()
+        
+        self.env = self.envs[0]
+        return self.env.reset()
+    
+    def step(self, actions):
+        return self.env.step(actions)
 
 @jit(nopython=True, parallel=True)
 def is_collision_jit(
